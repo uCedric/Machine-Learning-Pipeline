@@ -1,0 +1,47 @@
+# Use official Apache Spark image for Python
+FROM apache/spark-py:v3.4.0
+
+# Switch to root to install system packages and python libraries
+USER root
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYSPARK_PYTHON=python3
+ENV PYSPARK_DRIVER_PYTHON=python3
+
+# Install OpenJDK 11 and other system utilities
+RUN apt-get update || (sleep 5 && apt-get update) && \
+    apt-get install -y --no-install-recommends \
+    openjdk-11-jre-headless \
+    procps \
+    curl \
+    vim \
+    iputils-ping \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    # cmake \
+    # build-essential \
+    # g++ \
+
+# Force JAVA_HOME to OpenJDK 11
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+# Install the exact same Python dependencies
+# (pyspark is already present in the base image, but we ensure parity)
+RUN pip install --no-cache-dir scikit-build cmake && \
+    pip install --no-cache-dir \
+    pyarrow \
+    pandas \
+    Pillow \
+    numpy \
+    # horovod
+
+# Set up the application directory
+WORKDIR /app
+
+# Set PYTHONPATH to include the app directory
+ENV PYTHONPATH=/app
+
+# Default back to the spark user if preferred, but root is often needed 
+# for accessing shared volumes in standalone clusters
+# USER spark
