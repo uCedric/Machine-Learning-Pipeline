@@ -76,8 +76,7 @@ class InferenceConsumer:
                 self._consumer.commit()
             except Exception:
                 logger.exception(
-                    "Failed to process event %s for %s/%s",
-                    event.event_id,
+                    "Failed to process event for %s/%s",
                     event.bucket,
                     event.object_key,
                 )

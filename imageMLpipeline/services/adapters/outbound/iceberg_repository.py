@@ -23,14 +23,13 @@ from domain.models import InferenceResult
 logger = logging.getLogger(__name__)
 
 _SCHEMA = Schema(
-    NestedField(1, "event_id", StringType(), required=True),
-    NestedField(2, "bucket", StringType(), required=True),
-    NestedField(3, "object_key", StringType(), required=True),
-    NestedField(4, "anomaly_score", DoubleType(), required=True),
-    NestedField(5, "is_anomaly", BooleanType(), required=True),
-    NestedField(6, "model_name", StringType(), required=True),
-    NestedField(7, "heatmap_key", StringType(), required=True),
-    NestedField(8, "inferred_at", TimestamptzType(), required=True),
+    NestedField(1, "bucket", StringType(), required=True),
+    NestedField(2, "object_key", StringType(), required=True),
+    NestedField(3, "anomaly_score", DoubleType(), required=True),
+    NestedField(4, "is_anomaly", BooleanType(), required=True),
+    NestedField(5, "model_name", StringType(), required=True),
+    NestedField(6, "heatmap_key", StringType(), required=True),
+    NestedField(7, "inferred_at", TimestamptzType(), required=True),
 )
 
 
@@ -72,7 +71,6 @@ class IcebergResultRepository(ResultRepository):
         record = pa.Table.from_pylist(
             [
                 {
-                    "event_id": result.event_id,
                     "bucket": result.bucket,
                     "object_key": result.object_key,
                     "anomaly_score": result.anomaly_score,

@@ -9,13 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from uuid import uuid4
 
 INFERENCE_EVENT = "inference"
-
-
-def _new_id() -> str:
-    return uuid4().hex
 
 
 def _utcnow() -> datetime:
@@ -37,7 +32,8 @@ class InferenceEvent:
     """Signals that a stored image is ready to be inferred.
 
     Emitted by the ELT once an image lands in object storage and consumed by the
-    inference service.
+    inference service. The image is identified by its ``object_key`` — a
+    uuid-based file name — so no separate event id is carried.
     """
 
     bucket: str
@@ -45,15 +41,17 @@ class InferenceEvent:
     content_type: str
     size_bytes: int
     event: str = INFERENCE_EVENT
-    event_id: str = field(default_factory=_new_id)
     created_at: datetime = field(default_factory=_utcnow)
 
 
 @dataclass(frozen=True)
 class InferenceResult:
-    """The outcome of running the model against a single image."""
+    """The outcome of running the model against a single image.
 
-    event_id: str
+    Keyed by ``object_key`` (a uuid-based file name), which uniquely identifies
+    the source image.
+    """
+
     bucket: str
     object_key: str
     anomaly_score: float

@@ -39,7 +39,7 @@ class EltPoller:
             return 0
         with open(path, "rb") as f:
             data = f.read()
-        key = f"{path.stem}-{uuid4().hex[:8]}{path.suffix.lower()}"
+        key = f"{uuid4().hex}{path.suffix.lower()}"
         self._use_case.execute(key=key, data=data, content_type=_content_type(path))
         return 1
 

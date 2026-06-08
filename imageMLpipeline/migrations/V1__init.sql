@@ -3,8 +3,8 @@
 
 CREATE TABLE IF NOT EXISTS inference_results (
     event_id      UUID PRIMARY KEY,
-    bucket        TEXT NOT NULL,
     object_key    TEXT NOT NULL,
+    bucket        TEXT NOT NULL,
     anomaly_score DOUBLE PRECISION NOT NULL,
     is_anomaly    BOOLEAN NOT NULL,
     model_name    TEXT NOT NULL,

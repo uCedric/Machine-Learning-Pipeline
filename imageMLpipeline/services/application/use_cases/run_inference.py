@@ -68,7 +68,6 @@ class RunInferenceUseCase:
 
         # Persist the scalar result (score + verdict + heatmap location).
         result = InferenceResult(
-            event_id=event.event_id,
             bucket=event.bucket,
             object_key=event.object_key,
             anomaly_score=anomaly_score,

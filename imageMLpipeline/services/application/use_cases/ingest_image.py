@@ -58,18 +58,16 @@ class IngestImage:
             # in MinIO with no downstream notification. Log with context and
             # re-raise so the caller can reconcile / retry.
             logger.exception(
-                "Stored image %s/%s but failed to publish '%s' event %s",
+                "Stored image %s/%s but failed to publish '%s' event",
                 event.bucket,
                 event.object_key,
                 event.event,
-                event.event_id,
             )
             self._write_dead_letter(event)
             raise
         logger.info(
-            "Published '%s' event %s for %s/%s",
+            "Published '%s' event for %s/%s",
             event.event,
-            event.event_id,
             event.bucket,
             event.object_key,
         )
@@ -83,7 +81,6 @@ class IngestImage:
         """
         payload = {
             "event": event.event,
-            "event_id": event.event_id,
             "bucket": event.bucket,
             "object_key": event.object_key,
             "content_type": event.content_type,
@@ -92,9 +89,9 @@ class IngestImage:
         }
         try:
             self._dead_letter_dir.mkdir(parents=True, exist_ok=True)
-            path = self._dead_letter_dir / f"{event.event_id}.json"
+            path = self._dead_letter_dir / f"{Path(event.object_key).stem}.json"
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            logger.warning("Wrote unpublished event %s to dead-letter file %s", event.event_id, path)
+            logger.warning("Wrote unpublished event %s to dead-letter file %s", event.object_key, path)
         except OSError:
             # A dead-letter write failure must not mask the original publish error.
-            logger.exception("Failed to write dead-letter file for event %s", event.event_id)
+            logger.exception("Failed to write dead-letter file for event %s", event.object_key)

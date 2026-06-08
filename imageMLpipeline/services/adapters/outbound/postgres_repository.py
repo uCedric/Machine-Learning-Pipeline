@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from pathlib import PurePosixPath
 from typing import Iterator
 
 from psycopg2.extensions import connection as Connection
@@ -51,11 +52,14 @@ class PostgresResultRepository(ResultRepository):
             self._pool.putconn(conn)
 
     def save(self, result: InferenceResult) -> None:
+        # The object key is a uuid-based file name; the event id is that uuid
+        # (the key without its extension), recording one execution per image.
+        event_id = PurePosixPath(result.object_key).stem
         with self._connection() as conn, conn.cursor() as cur:
 
             _INSERT_SQL = """
             INSERT INTO inference_results
-                (event_id, bucket, object_key, anomaly_score, is_anomaly,
+                (event_id, object_key, bucket, anomaly_score, is_anomaly,
                 model_name, heatmap_key, inferred_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (event_id) DO NOTHING
@@ -64,9 +68,9 @@ class PostgresResultRepository(ResultRepository):
             cur.execute(
                 _INSERT_SQL,
                 (
-                    result.event_id,
-                    result.bucket,
+                    event_id,
                     result.object_key,
+                    result.bucket,
                     result.anomaly_score,
                     result.is_anomaly,
                     result.model_name,

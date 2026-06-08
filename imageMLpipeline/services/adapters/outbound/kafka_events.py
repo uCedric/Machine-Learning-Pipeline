@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 def _to_payload(event: InferenceEvent) -> Dict[str, Any]:
     return {
         "event": event.event,
-        "event_id": event.event_id,
         "bucket": event.bucket,
         "object_key": event.object_key,
         "content_type": event.content_type,
@@ -34,7 +33,6 @@ def _from_payload(payload: Dict[str, Any]) -> InferenceEvent:
         content_type=payload.get("content_type", "application/octet-stream"),
         size_bytes=int(payload.get("size_bytes", 0)),
         event=payload.get("event", INFERENCE_EVENT),
-        event_id=payload["event_id"],
         created_at=datetime.fromisoformat(payload["created_at"]),
     )
 
