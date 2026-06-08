@@ -21,6 +21,19 @@ def _env(key: str, default: str) -> str:
     return os.getenv(key, default)
 
 
+def _required(*keys: str) -> str:
+    """Return the first non-empty value among ``keys``.
+
+    Credentials have no safe default and must be supplied via the environment
+    (loaded from ``.env``); raise if none of ``keys`` is set.
+    """
+    for key in keys:
+        value = os.getenv(key)
+        if value:
+            return value
+    raise RuntimeError(f"Missing required credential; set one of: {', '.join(keys)}")
+
+
 def _bool(key: str, default: str = "false") -> bool:
     return _env(key, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -82,8 +95,8 @@ class Settings:
     @staticmethod
     def from_env() -> "Settings":
         endpoint = _env("MINIO_ENDPOINT", "minio:9000")
-        access_key = _env("MINIO_ACCESS_KEY", _env("MINIO_ROOT_USER", "minioadmin"))
-        secret_key = _env("MINIO_SECRET_KEY", _env("MINIO_ROOT_PASSWORD", "minioadmin"))
+        access_key = _required("MINIO_ACCESS_KEY", "MINIO_ROOT_USER")
+        secret_key = _required("MINIO_SECRET_KEY", "MINIO_ROOT_PASSWORD")
         secure = _bool("MINIO_SECURE", "false")
         warehouse_bucket = _env("WAREHOUSE_BUCKET", "warehouse")
         scheme = "https" if secure else "http"
@@ -129,8 +142,8 @@ class Settings:
 
 
 def _postgres_uri() -> str:
-    user = _env("POSTGRES_USER", "postgres")
-    password = _env("POSTGRES_PASSWORD", "postgres")
+    user = _required("POSTGRES_USER")
+    password = _required("POSTGRES_PASSWORD")
     host = _env("POSTGRES_HOST", "postgres")
     port = _env("POSTGRES_PORT", "5432")
     database = _env("POSTGRES_DB", "postgres")

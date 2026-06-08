@@ -1,28 +1,28 @@
 # ── Kafka ──────────────────────────────────────────────────────────────────
-KAFKA_TOPIC=inference-events
+KAFKA_TOPIC=
 
 # ── MinIO object storage ─────────────────────────────────────────────────────
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
-IMAGES_BUCKET=images
-WAREHOUSE_BUCKET=warehouse
-MODELS_BUCKET=models
+MINIO_ROOT_USER=
+MINIO_ROOT_PASSWORD=
+IMAGES_BUCKET=
+WAREHOUSE_BUCKET=
+MODELS_BUCKET=
 
 # ── PostgreSQL (Iceberg catalog) ─────────────────────────────────────────────
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=postgres
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+POSTGRES_DB=
 
 # ── Apache Iceberg ───────────────────────────────────────────────────────────
-ICEBERG_NAMESPACE=inference
-ICEBERG_TABLE=results
+ICEBERG_NAMESPACE=
+ICEBERG_TABLE=
 
 # ── ELT ──────────────────────────────────────────────────────────────────────
-ELT_POLL_INTERVAL=5
+ELT_POLL_INTERVAL=
 
 # ── Inference model ──────────────────────────────────────────────────────────
-MODEL_NAME=mock-model-v1
+MODEL_NAME=
 
 # ── Spark (retained cluster; not used for inference) ─────────────────────────
-SPARK_WORKER_MEMORY=5G
-SPARK_WORKER_CORES=2
+SPARK_WORKER_MEMORY=
+SPARK_WORKER_CORES=

@@ -57,8 +57,8 @@ services:
       - "9000:9000"   # S3 API
       - "9001:9001"   # Web console
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -75,11 +75,11 @@ services:
       minio:
         condition: service_started
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      IMAGES_BUCKET: ${IMAGES_BUCKET:-images}
-      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET:-warehouse}
-      MODELS_BUCKET: ${MODELS_BUCKET:-models}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      MODELS_BUCKET: ${MODELS_BUCKET}
     volumes:
       - ./services/adapters/outbound/patchcore/asset:/assets:ro
     entrypoint: >
@@ -106,9 +106,9 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -131,9 +131,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-postgres}
-      FLYWAY_USER: ${POSTGRES_USER:-postgres}
-      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
       # The DB may already hold PyIceberg's catalog tables; baseline so Flyway
       # adopts the existing (non-empty) schema instead of refusing to migrate.
       FLYWAY_BASELINE_ON_MIGRATE: "true"
@@ -156,14 +156,14 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      KAFKA_TOPIC: ${KAFKA_TOPIC:-inference-events}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
       MINIO_ENDPOINT: minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      IMAGES_BUCKET: ${IMAGES_BUCKET:-images}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
       ELT_INPUT_FILE: /app/data/007.png
       ELT_PROCESSED_DIR: /data/processed
-      ELT_POLL_INTERVAL: ${ELT_POLL_INTERVAL:-5}
+      ELT_POLL_INTERVAL: ${ELT_POLL_INTERVAL}
     volumes:
       - ./data:/data
     command: python -m bootstrap.elt
@@ -187,21 +187,21 @@ services:
         condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      KAFKA_TOPIC: ${KAFKA_TOPIC:-inference-events}
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
       KAFKA_GROUP_ID: inference-service
       MINIO_ENDPOINT: minio:9000
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      IMAGES_BUCKET: ${IMAGES_BUCKET:-images}
-      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET:-warehouse}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-postgres}
-      ICEBERG_NAMESPACE: ${ICEBERG_NAMESPACE:-inference}
-      ICEBERG_TABLE: ${ICEBERG_TABLE:-results}
-      MODEL_NAME: ${MODEL_NAME:-mock-model-v1}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
+      ICEBERG_NAMESPACE: ${ICEBERG_NAMESPACE}
+      ICEBERG_TABLE: ${ICEBERG_TABLE}
+      MODEL_NAME: ${MODEL_NAME}
     command: python -m bootstrap.inference
 
   # ── Spark Master ───────────────────────────────────────────────────────────
