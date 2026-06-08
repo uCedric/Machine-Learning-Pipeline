@@ -1,96 +1,266 @@
-version: '3.8'
+networks:
+  data-net:
+    driver: bridge
 
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  kafka-data:
+  minio-data:
+  postgres-data:
+
+# ── Services ─────────────────────────────────────────────────────────────────
 services:
-  spark-master:
-    build:
-      context: .
-      dockerfile: Dockerfile.spark
-    image: spark-node-with-deps
-    container_name: spark-master
-    user: root
+
+  # ── Kafka Broker (KRaft mode — no ZooKeeper) ──────────────────────────────
+  kafka:
+    image: apache/kafka:4.2.0
+    container_name: kafka
+    restart: unless-stopped
+    networks:
+      - data-net
     ports:
-      - "7077:7077"
-      - "8080:8080"
+      - "9092:9092"   # external (host) access
+      - "29092:29092" # internal (container-to-container) access
     environment:
-      - SPARK_MODE=master
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master --host 0.0.0.0 --port 7077 --webui-port 8080
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: "69ec2bb9-9844-46ab-a33e-06d46baf2af2"
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_LOG_RETENTION_HOURS: 24
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 > /dev/null 2>&1"]
+      start_period: 30s
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── MinIO (S3-compatible object storage) ──────────────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    container_name: minio
+    restart: unless-stopped
+    networks:
+      - data-net
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+
+  # ── MinIO bucket bootstrap (one-shot) ─────────────────────────────────────
+  # Waits for MinIO, creates the image + Iceberg warehouse + models buckets,
+  # then uploads the PatchCore model assets to models/base/.
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    container_name: minio-init
+    networks:
+      - data-net
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      MODELS_BUCKET: ${MODELS_BUCKET}
+    volumes:
+      - ./services/adapters/outbound/patchcore/asset:/assets:ro
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do
+        echo 'waiting for minio...'; sleep 2;
+      done;
+      mc mb --ignore-existing local/$$IMAGES_BUCKET;
+      mc mb --ignore-existing local/$$WAREHOUSE_BUCKET;
+      mc mb --ignore-existing local/$$MODELS_BUCKET;
+      mc cp /assets/memory_bank.npy local/$$MODELS_BUCKET/base/;
+      mc cp /assets/resnet_backbone.onnx local/$$MODELS_BUCKET/base/;
+      mc cp /assets/resnet_backbone.onnx.data local/$$MODELS_BUCKET/base/;
+      echo 'minio buckets ready';
+      "
+
+  # ── PostgreSQL (Iceberg catalog backend) ──────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    networks:
+      - data-net
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── Flyway schema migration (one-shot) ────────────────────────────────────
+  # Waits for Postgres, then applies the versioned migrations in ./migrations
+  # (V1__init.sql, ...). Flyway records applied versions in its schema-history
+  # table, so re-runs are no-ops until a new V*__*.sql is added.
+  flyway:
+    image: flyway/flyway:11-alpine
+    container_name: flyway
+    networks:
+      - data-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      FLYWAY_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      # The DB may already hold PyIceberg's catalog tables; baseline so Flyway
+      # adopts the existing (non-empty) schema instead of refusing to migrate.
+      FLYWAY_BASELINE_ON_MIGRATE: "true"
+    volumes:
+      - ./migrations:/flyway/sql:ro
+    command: migrate
+
+  # ── ELT (image ingest → MinIO → Kafka "inference" event) ──────────────────
+  elt:
+    build: ./services
+    image: pipeline-app
+    container_name: elt
+    restart: on-failure
+    networks:
+      - data-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
+      ELT_INPUT_FILE: /app/data/007.png
+      ELT_PROCESSED_DIR: /data/processed
+      ELT_POLL_INTERVAL: ${ELT_POLL_INTERVAL}
+    volumes:
+      - ./data:/data
+    command: python -m bootstrap.elt
+
+  # ── Inference microservice (Kafka consumer → model → Iceberg) ─────────────
+  # Replaces the old spark-submit driver. Inference runs in pure Python and does
+  # NOT use the Spark cluster.
+  inference-service:
+    build: ./services
+    image: pipeline-app
+    container_name: inference-service
+    restart: on-failure
+    networks:
+      - data-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_GROUP_ID: inference-service
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
+      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
+      ICEBERG_NAMESPACE: ${ICEBERG_NAMESPACE}
+      ICEBERG_TABLE: ${ICEBERG_TABLE}
+      MODEL_NAME: ${MODEL_NAME}
+    command: python -m bootstrap.inference
+
+  # ── Spark Master ───────────────────────────────────────────────────────────
+  # Retained cluster. Not used by the inference path for now.
+  spark-master:
+    build: .
+    image: spark-app
+    container_name: spark-master
+    restart: unless-stopped
+    networks:
+      - data-net
+    ports:
+      - "7077:7077"   # Spark master RPC
+      - "8081:8080"   # Spark master Web UI
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-    networks:
-      spark-net:
-        ipv4_address: 172.20.0.2
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
+  # ── Spark Worker 1 ─────────────────────────────────────────────────────────
   spark-worker-1:
-    image: spark-node-with-deps
+    image: spark-app
     container_name: spark-worker-1
-    user: root
+    restart: unless-stopped
+    networks:
+      - data-net
+    ports:
+      - "8082:8081"   # Worker Web UI
     depends_on:
       spark-master:
         condition: service_healthy
-    ports:
-      - "8081:8081"
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-    volumes:
-      - /home/cedric/imageMLpipeline/parquet_output:/app/parquet_output
-      - /home/cedric/imageMLpipeline/processed_images:/app/processed_images
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081
-    networks:
-      spark-net:
-        ipv4_address: 172.20.0.3
 
+  # ── Spark Worker 2 ─────────────────────────────────────────────────────────
   spark-worker-2:
-    image: spark-node-with-deps
+    image: spark-app
     container_name: spark-worker-2
-    user: root
+    restart: unless-stopped
+    networks:
+      - data-net
+    ports:
+      - "8083:8081"   # Worker Web UI
     depends_on:
       spark-master:
         condition: service_healthy
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081
+
+  # ── Spark Worker 3 ─────────────────────────────────────────────────────────
+  spark-worker-3:
+    image: spark-app
+    container_name: spark-worker-3
+    restart: unless-stopped
+    networks:
+      - data-net
     ports:
-      - "8082:8082"
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-    volumes:
-      - /home/cedric/imageMLpipeline/parquet_output:/app/parquet_output
-      - /home/cedric/imageMLpipeline/processed_images:/app/processed_images
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8082
-    networks:
-      spark-net:
-        ipv4_address: 172.20.0.4
-
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: image-ml-pipeline
-    container_name: image-app
-    stdin_open: true
-    tty: true
+      - "8084:8081"   # Worker Web UI
     depends_on:
-      spark-worker-1:
-        condition: service_started
-      spark-worker-2:
-        condition: service_started
-    environment:
-      - SPARK_MASTER=spark://spark-master:7077
-      # 當使用固定 IP 時，建議將 SPARK_LOCAL_IP 設為容器自身的固定 IP
-      - SPARK_LOCAL_IP=172.20.0.5
-    command: bash run.sh
-    volumes:
-      - /home/cedric/imageMLpipeline/parquet_output:/app/parquet_output
-      - /home/cedric/imageMLpipeline/processed_images:/app/processed_images
-    networks:
-      spark-net:
-        ipv4_address: 172.20.0.5
-
-networks:
-  spark-net:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+      spark-master:
+        condition: service_healthy
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081

@@ -1,176 +1,136 @@
-Reference to UBER's study:
-https://www.uber.com/tw/zh-tw/blog/accelerating-deep-learning/
-  -horovod https://www.youtube.com/watch?v=jbbnZIpCu-U
-  -Ray™
+# Image Inference Pipeline (Kafka · MinIO · Iceberg · Spark)
 
----
-
-# Spark Image ML Pipeline
-
-An end-to-end image classification pipeline combining **Apache Spark** distributed preprocessing with **PyTorch** model training, orchestrated via a **Chain of Responsibility** design pattern.
-
----
+An event-driven image-inference stack designed with Hexagonal Architecture. An **ELT** loads images into object
+storage and announces them on Kafka; a **Python inference microservice** consumes
+those events, runs a model, and records results in an Apache Iceberg table.
 
 ## Architecture
 
-The pipeline is driven by `main.py`, which chains seven sequential handlers. Each handler reads from and writes to a shared `context` dict, then passes it to the next stage.
-
 ```
-ParameterIngestion → Validation → DataPreparation → FeatureEngineering
-                  → ModelTraining → Evaluation → Deployment
-```
+                   ./data/incoming (drop images here)
+                            │
+                            ▼
+   ┌────────────────────────────────────┐
+   │  ELT service (bootstrap.elt)        │
+   │   1. load image  ───────────────────────────►  MinIO bucket "images"
+   │   2. emit "inference" event ─────────┐
+   └──────────────────────────────────────┼──────►  Kafka topic "inference-events"
+                                           │                 │
+                                           │                 ▼
+   ┌───────────────────────────────────────────────────────────────────┐
+   │  Inference microservice (bootstrap.inference)                       │
+   │   1. consume event   2. read image from MinIO                       │
+   │   3. model.predict() → "inferencing", returns 1                     │
+   │   4. append result row ─────────────────────────────────────────┐  │
+   └──────────────────────────────────────────────────────────────────┼─┘
+                                                                       ▼
+                          Apache Iceberg table  inference.results
+                          ├─ data + metadata  →  MinIO bucket "warehouse"
+                          └─ catalog          →  PostgreSQL
 
-| Stage | Handler | Responsibility |
-|---|---|---|
-| 1 | `ParameterIngestionHandler` | Parse CLI arguments into context |
-| 2 | `ValidationHandler` | Validate model, loss, optimizer, and scheduler config |
-| 3 | `DataPreparationHandler` | Spark preprocessing — load parquet, apply Pandas UDF, save JPEGs |
-| 4 | `FeatureEngineeringHandler` | Build PyTorch DataLoaders with normalization transforms |
-| 5 | `ModelTrainingHandler` | Initialize factories and run training loop with optional scheduler |
-| 6 | `EvaluationHandler` | Compute final validation loss and accuracy |
-| 7 | `DeploymentHandler` | Save model weights and plot training history |
-
----
-
-## Project Structure
-
-```
-imageMLpipeline/
-├── main.py                            # Pipeline orchestrator (Chain of Responsibility)
-├── run.sh                             # Entrypoint — sets env vars and launches main.py
-├── Dockerfile                         # App container (Python + PySpark + PyTorch)
-├── Dockerfile.spark                   # Spark master/worker container
-├── docker-compose.yml                 # Spark cluster + app service wiring
-│
-├── src/
-│   ├── preprocessing.py               # Spark pipeline — parquet ingestion, Pandas UDF, JPEG output
-│   ├── datasource.py                  # DataLoader construction and data directory validation
-│   └── trainer.py                     # Trainer class — training loop, validation eval, scheduler step
-│
-├── models/
-│   ├── ResNet18.py                    # Thread-safe singleton ResNet18 model
-│   ├── modelFactory.py                # Model factory
-│   ├── loss/lossFactory.py            # Loss function factory
-│   ├── optim/optimFactory.py          # Optimizer factory
-│   └── scheduler/schedulerFactory.py  # LR scheduler factory
-│
-├── utils/
-│   ├── constants.py                   # Supported types, required scheduler params
-│   ├── validators.py                  # Scheduler config middleware validator
-│   ├── json.py                        # JSON CLI argument parser
-│   ├── logger.py                      # Logger setup
-│   └── plot.py                        # Training history plots
-│
-└── .claude/commands/                  # Claude Code skills for extending the pipeline
-    ├── add-model.md                   # /add-model — add a new model following factory + singleton pattern
-    ├── add-scheduler.md               # /add-scheduler — add a new LR scheduler
-    └── add-stage.md                   # /add-stage — add a new CoR stage to the pipeline
+   Spark master + 3 workers: retained cluster, NOT used by the inference path.
 ```
 
----
+## Services & ports
 
-## Design Patterns
+| Service             | Purpose                                  | Host port(s)          |
+|---------------------|------------------------------------------|-----------------------|
+| `kafka`             | Event bus (KRaft, no ZooKeeper)          | 9092, 29092           |
+| `minio`             | S3-compatible object storage             | 9000 (API), 9001 (UI) |
+| `minio-init`        | One-shot: creates `images` + `warehouse` | —                     |
+| `postgres`          | Iceberg catalog backend                  | 5432                  |
+| `elt`               | Image ingest → MinIO → Kafka event       | —                     |
+| `inference-service` | Kafka consumer → model → Iceberg         | —                     |
+| `spark-master`      | Retained Spark cluster (idle)            | 7077, 8081 (UI)       |
+| `spark-worker-1..3` | Retained Spark workers (idle)            | 8082 / 8083 / 8084    |
 
-- **Chain of Responsibility** (`main.py`) — pipeline stages are decoupled handlers linked at runtime; inserting a new stage requires only a new handler class and a `set_next()` call
-- **Factory** (`modelFactory`, `lossFactory`, `optimFactory`, `schedulerFactory`) — object creation is centralized; adding support for a new type only requires updating `constants.py` and the factory registry
-- **Singleton** (`ResNet18`) — prevents duplicate model instantiation; raises `RuntimeError` if called again with a conflicting `num_classes`
-- **Validation Middleware** (`utils/validators.py`) — scheduler config flows through three distinct layers: parse (`json.py`) → validate (`validators.py`) → construct (factory)
+MinIO console: http://localhost:9001 (default `minioadmin` / `minioadmin`).
 
----
-
-## Prerequisites
-
-- Docker installed
-- (Optional) Spark Master/Worker running — configured at `spark://spark-master:7077` in `docker-compose.yml`
-
----
-
-## Running the Pipeline
-
-### Build
+## Quick start
 
 ```bash
-docker compose build
+# 1. Build images and start the stack
+docker compose up -d --build
+
+# 2. Drop your own .png/.jpg files into ./data (the elt service picks up
+#    ELT_INPUT_FILE, default ./data/007.png, and uploads it)
+
+# 3. Watch the pipeline work
+docker compose logs -f elt inference-service
+#    elt:               "Loaded image …" / "Published 'inference' event …"
+#    inference-service: "Saved result … score=0.42 (OK), heatmap=heatmap/007.png"
+
+# 4. Inspect the Iceberg results table
+docker compose run --rm inference-service python -m bootstrap.show_results
 ```
 
-### Run
+Stop with `docker compose down` (add `-v` to wipe Kafka/MinIO/Postgres volumes).
 
-```bash
-docker compose up
+## How it flows
+
+1. Drop an image into `./data/incoming`.
+2. `elt` uploads it to the MinIO `images` bucket and publishes an `inference`
+   event (`{event, event_id, bucket, object_key, content_type, size_bytes,
+   created_at}`) to the `inference-events` topic, then moves the file to
+   `./data/processed`.
+3. `inference-service` consumes the event, reads the image back from MinIO, runs
+   the model, and appends a row to the `inference.results` Iceberg table. Kafka
+   offsets are committed only after the row is saved (at-least-once).
+
+## Project layout
+
+The `services/` codebase follows **Hexagonal Architecture** (Ports & Adapters).
+Dependencies point inward only: `adapters → application → domain`. The domain
+imports nothing; the application depends only on the domain and the port
+interfaces it owns; concrete infrastructure is reached solely in `bootstrap/`.
+
+```
+services/
+  domain/                       # ── Core: entities, zero external deps ──
+    models.py                     ImageObject, InferenceEvent, InferenceResult
+  application/                  # ── Application: orchestration + the ports it needs ──
+    ports/
+      storage.py                  ObjectStorage
+      events.py                   EventPublisher, EventConsumer
+      repository.py               ResultRepository
+      model.py                    AnomalyModel        (the inference-model port)
+      heatmap.py                  HeatmapRenderer
+    use_cases/
+      ingest_image.py             IngestImage          (ELT use case)
+      run_inference.py            RunInferenceUseCase   (depends only on ports)
+  adapters/                     # ── Infrastructure: ports & adapters ──
+    inbound/                       driving adapters (entry loops)
+      elt_poller.py                 poll a path → IngestImage
+      inference_consumer.py         consume Kafka → RunInferenceUseCase
+    outbound/                      driven adapters (implement ports)
+      minio_storage.py              ObjectStorage  → MinIO
+      kafka_events.py               EventPublisher/EventConsumer → Kafka
+      postgres_repository.py        ResultRepository → Postgres
+      iceberg_repository.py         ResultRepository → Iceberg
+      composite_repository.py       ResultRepository → fan-out (Iceberg + Postgres)
+      patchcore/                    PatchCore model adapter
+        model.py                      PatchCore (implements AnomalyModel)
+        resources.py                  load memory bank + FAISS + ONNX (stage 1)
+        factory.py                    ModelFactory / build_patchcore
+        heatmap.py                    MatplotlibHeatmapRenderer (stage 3)
+        asset/                        memory_bank.npy, resnet_backbone.onnx(.data)
+  config/                       # ── Configuration (read once, at the edge) ──
+    settings.py                   env-driven Settings (Kafka/MinIO/Iceberg/ELT/Model)
+    logging.py                    logging setup
+  bootstrap/                    # ── Composition roots: the ONLY wiring ──
+    elt.py                        python -m bootstrap.elt
+    inference.py                  python -m bootstrap.inference
+    show_results.py               dev helper: print the results table
 ```
 
-The `app` service executes `run.sh`, which sets training parameters as environment variables and launches `main.py`.
-
----
+The use cases never import an SDK — they speak only to ports. Swapping the model
+means adding one `AnomalyModel` adapter and changing one line in
+`bootstrap/inference.py`; swapping object storage or the event bus is the same
+one-adapter, one-line change. The two deployables (`elt`, `inference-service`)
+share one hexagon and differ only in their composition root.
 
 ## Configuration
 
-Training parameters are set as environment variables in `run.sh` and forwarded as CLI arguments to `main.py`:
-
-| Variable | Default | Argument |
-|---|---|---|
-| `MODEL_TYPE` | `resnet18` | `--model_type` |
-| `LOSS_FUNCTION` | `cross_entropy` | `--loss_function` |
-| `OPTIMIZER` | `adam` | `--optimizer` |
-| `LEARNING_RATE` | `0.001` | `--learning_rate` |
-| `EPOCHS` | `50` | `--epochs` |
-| `SCHEDULER` | `{"method":"step_lr","step_size":10,"gamma":0.1}` | `--scheduler` |
-| `INPUT_PATH` | `/app/parquet_output/` | `--input_path` |
-| `DATA_DIR` | `/app/processed_images` | `--data_dir` |
-| `MODEL_PATH` | `/app/models/model.pth` | `--model_path` |
-
-Override any variable via `docker compose run` or the `environment` block in `docker-compose.yml`.
-
-### Scheduler Configuration
-
-The `--scheduler` argument accepts a JSON string. The `method` key selects the scheduler; all remaining keys are forwarded as constructor parameters.
-
-```bash
-# StepLR — required: step_size
---scheduler '{"method":"step_lr","step_size":5,"gamma":0.1}'
-
-# CosineAnnealingLR — required: T_max
---scheduler '{"method":"cosine_annealing_lr","T_max":10,"eta_min":0}'
-
-# No scheduler
-# omit --scheduler entirely
-```
-
-Validation is handled by `utils/validators.py`. Missing required parameters raise a descriptive `ValueError` before model initialization.
-
----
-
-## Extending the Pipeline
-
-Use the built-in Claude Code skills for consistent extensions:
-
-| Skill | Example | What it does |
-|---|---|---|
-| `/add-model` | `/add-model ResNet50` | Adds a model following the singleton + factory pattern |
-| `/add-scheduler` | `/add-scheduler ReduceLROnPlateau` | Adds a scheduler and registers its required params |
-| `/add-stage` | `/add-stage EarlyStoppingHandler` | Adds a CoR stage and wires it into the chain |
-
----
-
-## Stack
-
-| Component | Technology |
-|---|---|
-| Distributed preprocessing | Apache Spark, Pandas UDFs, Apache Arrow |
-| Image processing | Pillow |
-| Model training | PyTorch, torchvision (ResNet18) |
-| Containerization | Docker, docker-compose |
-| Logging | Python `logging` |
-
----
-
-## Debugging
-
-If the Spark session fails, `spark_error.log` is written inside the container:
-
-```bash
-docker ps
-docker exec -it <container_id> /bin/bash
-cat spark_error.log
-ls -R /app/processed_images
-```
+All settings come from environment variables (see `.env`): Kafka topic, MinIO
+credentials/buckets, Postgres catalog connection, Iceberg namespace/table, ELT
+poll interval, and the model name. Defaults work out of the box for local use.

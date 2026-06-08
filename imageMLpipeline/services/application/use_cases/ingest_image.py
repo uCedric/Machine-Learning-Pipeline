@@ -1,0 +1,100 @@
+"""ELT use case: load an image into object storage, then emit an inference event.
+
+Pure application logic — it depends only on the :mod:`application.ports`
+abstractions and the :mod:`domain` model, never on a concrete SDK.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+from application.ports.events import EventPublisher
+from application.ports.storage import ObjectStorage
+from domain.models import ImageObject, InferenceEvent
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_DEAD_LETTER_DIR = "failed_events"
+
+
+class IngestImage:
+    def __init__(
+        self,
+        storage: ObjectStorage,
+        publisher: EventPublisher,
+        bucket: str,
+        dead_letter_dir: str = _DEFAULT_DEAD_LETTER_DIR,
+    ) -> None:
+        self._storage = storage
+        self._publisher = publisher
+        self._bucket = bucket
+        self._dead_letter_dir = Path(dead_letter_dir)
+
+    def execute(self, key: str, data: bytes, content_type: str) -> InferenceEvent:
+        try:
+            stored: ImageObject = self._storage.put_object(self._bucket, key, data, content_type)
+        except Exception:
+            # Upload failed: do not publish an inference event for an object that
+            # never landed. Log with context and re-raise for the caller to handle.
+            logger.exception(
+                "Failed to store image %s/%s (%d bytes)", self._bucket, key, len(data)
+            )
+            raise
+        logger.info(
+            "Loaded image %s/%s (%d bytes)", stored.bucket, stored.key, stored.size_bytes
+        )
+
+        event = InferenceEvent(
+            bucket=stored.bucket,
+            object_key=stored.key,
+            content_type=stored.content_type,
+            size_bytes=stored.size_bytes,
+        )
+        try:
+            self._publisher.publish(event)
+        except Exception:
+            # Image is stored but the event was not emitted: the object now exists
+            # in MinIO with no downstream notification. Log with context and
+            # re-raise so the caller can reconcile / retry.
+            logger.exception(
+                "Stored image %s/%s but failed to publish '%s' event %s",
+                event.bucket,
+                event.object_key,
+                event.event,
+                event.event_id,
+            )
+            self._write_dead_letter(event)
+            raise
+        logger.info(
+            "Published '%s' event %s for %s/%s",
+            event.event,
+            event.event_id,
+            event.bucket,
+            event.object_key,
+        )
+        return event
+
+    def _write_dead_letter(self, event: InferenceEvent) -> None:
+        """Persist an unpublished event to a local .json file for later reconciliation.
+
+        Uses the same payload shape as the Kafka publisher so the file can be
+        reloaded and re-published as-is.
+        """
+        payload = {
+            "event": event.event,
+            "event_id": event.event_id,
+            "bucket": event.bucket,
+            "object_key": event.object_key,
+            "content_type": event.content_type,
+            "size_bytes": event.size_bytes,
+            "created_at": event.created_at.isoformat(),
+        }
+        try:
+            self._dead_letter_dir.mkdir(parents=True, exist_ok=True)
+            path = self._dead_letter_dir / f"{event.event_id}.json"
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            logger.warning("Wrote unpublished event %s to dead-letter file %s", event.event_id, path)
+        except OSError:
+            # A dead-letter write failure must not mask the original publish error.
+            logger.exception("Failed to write dead-letter file for event %s", event.event_id)
