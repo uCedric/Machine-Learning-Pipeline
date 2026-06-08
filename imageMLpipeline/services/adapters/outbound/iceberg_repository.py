@@ -9,6 +9,7 @@ self-bootstrapping against an empty catalog.
 from __future__ import annotations
 
 import logging
+from pathlib import PurePosixPath
 
 import pyarrow as pa
 from pyiceberg.catalog.sql import SqlCatalog
@@ -23,13 +24,14 @@ from domain.models import InferenceResult
 logger = logging.getLogger(__name__)
 
 _SCHEMA = Schema(
-    NestedField(1, "bucket", StringType(), required=True),
-    NestedField(2, "object_key", StringType(), required=True),
-    NestedField(3, "anomaly_score", DoubleType(), required=True),
-    NestedField(4, "is_anomaly", BooleanType(), required=True),
-    NestedField(5, "model_name", StringType(), required=True),
-    NestedField(6, "heatmap_key", StringType(), required=True),
-    NestedField(7, "inferred_at", TimestamptzType(), required=True),
+    NestedField(1, "event_id", StringType(), required=True),
+    NestedField(2, "bucket", StringType(), required=True),
+    NestedField(3, "object_key", StringType(), required=True),
+    NestedField(4, "anomaly_score", DoubleType(), required=True),
+    NestedField(5, "is_anomaly", BooleanType(), required=True),
+    NestedField(6, "model_name", StringType(), required=True),
+    NestedField(7, "heatmap_key", StringType(), required=True),
+    NestedField(8, "inferred_at", TimestamptzType(), required=True),
 )
 
 
@@ -68,9 +70,12 @@ class IcebergResultRepository(ResultRepository):
             return self._catalog.create_table(self._identifier, schema=_SCHEMA)
 
     def save(self, result: InferenceResult) -> None:
+        # Match the Postgres sink: the event id is the object key's uuid stem.
+        event_id = PurePosixPath(result.object_key).stem
         record = pa.Table.from_pylist(
             [
                 {
+                    "event_id": event_id,
                     "bucket": result.bucket,
                     "object_key": result.object_key,
                     "anomaly_score": result.anomaly_score,
