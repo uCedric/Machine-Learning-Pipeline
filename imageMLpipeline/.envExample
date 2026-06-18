@@ -3,12 +3,18 @@ KAFKA_TOPIC=inference
 KAFKA_EVENT_TYPE=inference
 
 # ── MinIO object storage ─────────────────────────────────────────────────────
+# Endpoint uses the in-network service name (host:port) for docker compose.
+MINIO_ENDPOINT=minio:9000
+MINIO_SECURE=false
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
 IMAGES_BUCKET=images
 MODELS_BUCKET=models
 
 # ── PostgreSQL (inference results store) ─────────────────────────────────────
+# Host/port use the in-network service name for docker compose.
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
 POSTGRES_DB=postgres
