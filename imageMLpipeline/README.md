@@ -77,13 +77,13 @@ Stop with `docker compose down` (add `-v` to wipe Kafka/MinIO/Postgres volumes).
 
 ## Project layout
 
-The `services/` codebase follows **Hexagonal Architecture** (Ports & Adapters).
+The `inference-service/` codebase follows **Hexagonal Architecture** (Ports & Adapters).
 Dependencies point inward only: `adapters → application → domain`. The domain
 imports nothing; the application depends only on the domain and the port
 interfaces it owns; concrete infrastructure is reached solely in `bootstrap/`.
 
 ```
-services/
+inference-service/
   domain/                       # ── Core: entities, zero external deps ──
     models.py                     ImageObject, InferenceEvent, InferenceResult
   application/                  # ── Application: orchestration + the ports it needs ──

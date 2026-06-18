@@ -81,7 +81,7 @@ services:
       IMAGES_BUCKET: ${IMAGES_BUCKET}
       MODELS_BUCKET: ${MODELS_BUCKET}
     volumes:
-      - ./services/adapters/outbound/patchcore/asset:/assets:ro
+      - ./inference-service/adapters/outbound/patchcore/asset:/assets:ro
     entrypoint: >
       /bin/sh -c "
       until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do
@@ -141,7 +141,7 @@ services:
 
   # ── ELT (image ingest → MinIO → Kafka "inference" event) ──────────────────
   elt:
-    build: ./services
+    build: ./inference-service
     image: pipeline-app
     container_name: elt
     restart: on-failure
@@ -176,7 +176,7 @@ services:
   # ── Inference microservice (Kafka consumer → model → Postgres) ────────────
   # Replaces the old spark-submit driver. Inference runs in pure Python.
   inference-service:
-    build: ./services
+    build: ./inference-service
     image: pipeline-app
     container_name: inference-service
     restart: on-failure
@@ -209,7 +209,7 @@ services:
   # Read-only web UI: reads results from Postgres and proxies image/heatmap
   # bytes from MinIO. Open http://localhost:8000 once the stack is up.
   monitor-service:
-    build: ./monitor
+    build: ./monitor-service
     image: monitor-app
     container_name: monitor-service
     restart: on-failure
