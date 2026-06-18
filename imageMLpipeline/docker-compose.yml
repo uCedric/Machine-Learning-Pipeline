@@ -1,5 +1,6 @@
 networks:
   data-net:
+    name: MLpipeline-net
     driver: bridge
 
 # ── Volumes ──────────────────────────────────────────────────────────────────
@@ -64,8 +65,8 @@ services:
       - minio-data:/data
 
   # ── MinIO bucket bootstrap (one-shot) ─────────────────────────────────────
-  # Waits for MinIO, creates the image + Iceberg warehouse + models buckets,
-  # then uploads the PatchCore model assets to models/base/.
+  # Waits for MinIO, creates the image + models buckets, then uploads the
+  # PatchCore model assets to models/base/.
   minio-init:
     image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: minio-init
@@ -78,7 +79,6 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
       IMAGES_BUCKET: ${IMAGES_BUCKET}
-      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
       MODELS_BUCKET: ${MODELS_BUCKET}
     volumes:
       - ./services/adapters/outbound/patchcore/asset:/assets:ro
@@ -88,15 +88,15 @@ services:
         echo 'waiting for minio...'; sleep 2;
       done;
       mc mb --ignore-existing local/$$IMAGES_BUCKET;
-      mc mb --ignore-existing local/$$WAREHOUSE_BUCKET;
       mc mb --ignore-existing local/$$MODELS_BUCKET;
-      mc cp /assets/memory_bank.npy local/$$MODELS_BUCKET/base/;
-      mc cp /assets/resnet_backbone.onnx local/$$MODELS_BUCKET/base/;
-      mc cp /assets/resnet_backbone.onnx.data local/$$MODELS_BUCKET/base/;
+      mc cp /assets/memory_bank.npy local/$$MODELS_BUCKET/1.0.0/;
+      mc cp /assets/resnet_backbone.onnx local/$$MODELS_BUCKET/1.0.0/;
+      mc cp /assets/resnet_backbone.onnx.data local/$$MODELS_BUCKET/1.0.0/;
+      mc cp /assets/buffer_zone.txt local/$$MODELS_BUCKET/1.0.0/;
       echo 'minio buckets ready';
       "
 
-  # ── PostgreSQL (Iceberg catalog backend) ──────────────────────────────────
+  # ── PostgreSQL (inference results store) ───────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: postgres
@@ -134,8 +134,6 @@ services:
       FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
       FLYWAY_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
-      # The DB may already hold PyIceberg's catalog tables; baseline so Flyway
-      # adopts the existing (non-empty) schema instead of refusing to migrate.
       FLYWAY_BASELINE_ON_MIGRATE: "true"
     volumes:
       - ./migrations:/flyway/sql:ro
@@ -154,6 +152,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      flyway:
+        condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: ${KAFKA_TOPIC}
@@ -161,16 +161,20 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
       IMAGES_BUCKET: ${IMAGES_BUCKET}
-      ELT_INPUT_FILE: /app/data/007.png
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
+      ELT_INPUT_FOLDER: /app/data
       ELT_PROCESSED_DIR: /data/processed
       ELT_POLL_INTERVAL: ${ELT_POLL_INTERVAL}
     volumes:
       - ./data:/data
     command: python -m bootstrap.elt
 
-  # ── Inference microservice (Kafka consumer → model → Iceberg) ─────────────
-  # Replaces the old spark-submit driver. Inference runs in pure Python and does
-  # NOT use the Spark cluster.
+  # ── Inference microservice (Kafka consumer → model → Postgres) ────────────
+  # Replaces the old spark-submit driver. Inference runs in pure Python.
   inference-service:
     build: ./services
     image: pipeline-app
@@ -193,16 +197,43 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
       IMAGES_BUCKET: ${IMAGES_BUCKET}
-      WAREHOUSE_BUCKET: ${WAREHOUSE_BUCKET}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
       POSTGRES_DB: ${POSTGRES_DB}
-      ICEBERG_NAMESPACE: ${ICEBERG_NAMESPACE}
-      ICEBERG_TABLE: ${ICEBERG_TABLE}
       MODEL_NAME: ${MODEL_NAME}
     command: python -m bootstrap.inference
+
+  # ── Monitor (FastAPI dashboard over inference_results) ────────────────────
+  # Read-only web UI: reads results from Postgres and proxies image/heatmap
+  # bytes from MinIO. Open http://localhost:8000 once the stack is up.
+  monitor-service:
+    build: ./monitor
+    image: monitor-app
+    container_name: monitor-service
+    restart: on-failure
+    networks:
+      - data-net
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+      minio:
+        condition: service_started
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+      POSTGRES_DB: ${POSTGRES_DB}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+      IMAGES_BUCKET: ${IMAGES_BUCKET}
 
   # ── Spark Master ───────────────────────────────────────────────────────────
   # Retained cluster. Not used by the inference path for now.

@@ -11,7 +11,7 @@ class EventPublisher(ABC):
     """Outbound event stream (e.g. a Kafka producer)."""
 
     @abstractmethod
-    def publish(self, event: InferenceEvent) -> None:
+    def publish(self, topic: str, event: InferenceEvent) -> None:
         ...
 
 

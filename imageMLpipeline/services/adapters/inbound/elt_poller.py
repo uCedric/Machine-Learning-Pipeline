@@ -1,4 +1,4 @@
-"""ELT driving adapter: poll a file path and feed images to the IngestImage use case."""
+"""ELT driving adapter: poll a folder and feed each image to the IngestImage use case."""
 from __future__ import annotations
 
 import logging
@@ -23,30 +23,35 @@ class EltPoller:
     def __init__(
         self,
         use_case: IngestImage,
-        input_file: str,
+        input_folder: str,
         *,
         poll_interval: float,
         run_once: bool,
     ) -> None:
         self._use_case = use_case
-        self._input_file = input_file
+        self._input_folder = input_folder
         self._poll_interval = poll_interval
         self._run_once = run_once
 
     def _process_once(self) -> int:
-        path = Path(self._input_file)
-        if not path.is_file() or path.suffix.lower() not in _IMAGE_SUFFIXES:
+        folder = Path(self._input_folder)
+        if not folder.is_dir():
             return 0
-        with open(path, "rb") as f:
-            data = f.read()
-        key = f"{path.stem}-{uuid4().hex[:8]}{path.suffix.lower()}"
-        self._use_case.execute(key=key, data=data, content_type=_content_type(path))
-        return 1
+        count = 0
+        for path in sorted(folder.iterdir()):
+            if not path.is_file() or path.suffix.lower() not in _IMAGE_SUFFIXES:
+                continue
+            with open(path, "rb") as f:
+                data = f.read()
+            key = f"{uuid4().hex}{path.suffix.lower()}"
+            self._use_case.execute(key=key, data=data, content_type=_content_type(path))
+            count += 1
+        return count
 
     def run(self) -> None:
         logger.info(
             "ELT watching %s (poll=%.1fs, run_once=%s)",
-            self._input_file,
+            self._input_folder,
             self._poll_interval,
             self._run_once,
         )

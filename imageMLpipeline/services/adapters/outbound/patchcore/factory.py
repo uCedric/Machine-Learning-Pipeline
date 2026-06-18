@@ -13,6 +13,7 @@ from typing import Callable
 from application.ports.model import AnomalyModel
 from adapters.outbound.patchcore.model import PatchCore
 from adapters.outbound.patchcore.resources import (
+    DEFAULT_BUFFER_ZONE_PATH,
     DEFAULT_MEMORY_BANK_PATH,
     DEFAULT_ONNX_PATH,
     load_resources,
@@ -56,11 +57,16 @@ class ModelFactory:
     def _build_patchcore(
         memory_bank_path: str = DEFAULT_MEMORY_BANK_PATH,
         onnx_path: str = DEFAULT_ONNX_PATH,
+        buffer_zone_path: str = DEFAULT_BUFFER_ZONE_PATH,
         image_size: int = 224,
         providers: list[str] | None = None,
     ) -> PatchCore:
-        resources = load_resources(memory_bank_path, onnx_path, image_size, providers)
-        return PatchCore(resources.session, resources.index, resources.transform)
+        resources = load_resources(
+            memory_bank_path, onnx_path, buffer_zone_path, image_size, providers
+        )
+        return PatchCore(
+            resources.session, resources.index, resources.transform, resources.buffer_zone
+        )
 
 
 # Module-level convenience: a shared default factory instance.
@@ -82,5 +88,6 @@ def build_patchcore(config: ModelConfig) -> PatchCore:
         "patchcore",
         memory_bank_path=config.memory_bank_path,
         onnx_path=config.onnx_path,
+        buffer_zone_path=config.buffer_zone_path,
         image_size=config.image_size,
     )

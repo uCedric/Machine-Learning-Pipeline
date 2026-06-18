@@ -1,28 +1,24 @@
 # ── Kafka ──────────────────────────────────────────────────────────────────
-KAFKA_TOPIC=
+KAFKA_TOPIC=inference
+KAFKA_EVENT_TYPE=inference
 
 # ── MinIO object storage ─────────────────────────────────────────────────────
-MINIO_ROOT_USER=
-MINIO_ROOT_PASSWORD=
-IMAGES_BUCKET=
-WAREHOUSE_BUCKET=
-MODELS_BUCKET=
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=minioadmin
+IMAGES_BUCKET=images
+MODELS_BUCKET=models
 
-# ── PostgreSQL (Iceberg catalog) ─────────────────────────────────────────────
-POSTGRES_USER=
-POSTGRES_PASSWORD=
-POSTGRES_DB=
-
-# ── Apache Iceberg ───────────────────────────────────────────────────────────
-ICEBERG_NAMESPACE=
-ICEBERG_TABLE=
+# ── PostgreSQL (inference results store) ─────────────────────────────────────
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=postgres
 
 # ── ELT ──────────────────────────────────────────────────────────────────────
-ELT_POLL_INTERVAL=
+ELT_POLL_INTERVAL=5
 
 # ── Inference model ──────────────────────────────────────────────────────────
-MODEL_NAME=
+MODEL_NAME=patchcore
 
-# ── Spark (retained cluster; not used for inference) ─────────────────────────
+# ── Spark (retained cluster; for image preprocessing) ────────────────────────
 SPARK_WORKER_MEMORY=
 SPARK_WORKER_CORES=
