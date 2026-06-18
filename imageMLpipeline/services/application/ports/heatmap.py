@@ -8,6 +8,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from domain.models import BufferZone, PredictionStatus
+
 
 class HeatmapRenderer(ABC):
     """Renders an anomaly heatmap for an image, returning the encoded bytes.
@@ -23,7 +25,8 @@ class HeatmapRenderer(ABC):
         original_img_np: Any,
         dist_score: Any,
         anomaly_score: float,
-        threshold: float,
+        buffer_zone: BufferZone,
+        status: PredictionStatus,
         *,
         title: str | None = None,
     ) -> bytes:

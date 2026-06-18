@@ -11,6 +11,7 @@ import logging
 from adapters.inbound.elt_poller import EltPoller
 from adapters.outbound.kafka_events import KafkaEventPublisher
 from adapters.outbound.minio_storage import MinioObjectStorage
+from adapters.outbound.postgres_image_repository import PostgresImageRepository
 from application.use_cases.ingest_image import IngestImage
 from config.logging import configure_logging
 from config.settings import Settings
@@ -23,11 +24,19 @@ def main() -> None:
     settings = Settings.from_env()
 
     storage = MinioObjectStorage(settings.minio)
+    image_repository = PostgresImageRepository(settings.postgres.sql_uri)
     publisher = KafkaEventPublisher(settings.kafka)
-    use_case = IngestImage(storage, publisher, settings.minio.images_bucket)
+    use_case = IngestImage(
+        storage,
+        image_repository,
+        publisher,
+        settings.minio.images_bucket,
+        topic=settings.kafka.topic,
+        event_type=settings.kafka.event_type,
+    )
     poller = EltPoller(
         use_case,
-        settings.elt.input_file,
+        settings.elt.input_folder,
         poll_interval=settings.elt.poll_interval,
         run_once=settings.elt.run_once,
     )
@@ -36,6 +45,7 @@ def main() -> None:
         poller.run()
     finally:
         publisher.close()
+        image_repository.close()
 
 
 if __name__ == "__main__":

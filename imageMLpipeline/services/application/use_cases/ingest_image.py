@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from application.ports.events import EventPublisher
+from application.ports.image_repository import ImageRepository
 from application.ports.storage import ObjectStorage
 from domain.models import ImageObject, InferenceEvent
 
@@ -22,13 +23,19 @@ class IngestImage:
     def __init__(
         self,
         storage: ObjectStorage,
+        image_repository: ImageRepository,
         publisher: EventPublisher,
         bucket: str,
+        topic: str,
+        event_type: str,
         dead_letter_dir: str = _DEFAULT_DEAD_LETTER_DIR,
     ) -> None:
         self._storage = storage
+        self._image_repository = image_repository
         self._publisher = publisher
         self._bucket = bucket
+        self._topic = topic
+        self._event_type = event_type
         self._dead_letter_dir = Path(dead_letter_dir)
 
     def execute(self, key: str, data: bytes, content_type: str) -> InferenceEvent:
@@ -45,14 +52,31 @@ class IngestImage:
             "Loaded image %s/%s (%d bytes)", stored.bucket, stored.key, stored.size_bytes
         )
 
+        try:
+            # Record the image before announcing it: the inference result row
+            # references this image (FK on image_id), so the row must exist
+            # before the inference service consumes the event.
+            self._image_repository.save(stored)
+        except Exception:
+            # Stored in MinIO but not recorded: publishing now would let the
+            # inference service produce a result that violates the FK. Do not
+            # publish; log with context and re-raise for the caller to reconcile.
+            logger.exception(
+                "Stored image %s/%s but failed to record it in the image table",
+                stored.bucket,
+                stored.key,
+            )
+            raise
+
         event = InferenceEvent(
             bucket=stored.bucket,
             object_key=stored.key,
             content_type=stored.content_type,
             size_bytes=stored.size_bytes,
+            event=self._event_type,
         )
         try:
-            self._publisher.publish(event)
+            self._publisher.publish(self._topic, event)
         except Exception:
             # Image is stored but the event was not emitted: the object now exists
             # in MinIO with no downstream notification. Log with context and

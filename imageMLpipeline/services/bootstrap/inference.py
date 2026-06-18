@@ -1,7 +1,7 @@
 """Inference composition root.
 
 Subscribes to the Kafka topic, runs the model on each referenced image and
-persists the result to Iceberg and a Postgres ``inference_results`` table.
+persists the result to a Postgres ``inference_results`` table.
 Offsets are committed only after a result is saved (at-least-once).
 
 The port implementations are wired inside

@@ -7,7 +7,7 @@ from domain.models import InferenceResult
 
 
 class ResultRepository(ABC):
-    """Durable store for inference results (e.g. an Iceberg table or Postgres)."""
+    """Durable store for inference results (e.g. a Postgres table)."""
 
     @abstractmethod
     def save(self, result: InferenceResult) -> None:

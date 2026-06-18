@@ -10,7 +10,7 @@ from kafka import KafkaConsumer, KafkaProducer
 
 from application.ports.events import EventConsumer, EventPublisher
 from config.settings import KafkaConfig
-from domain.models import INFERENCE_EVENT, InferenceEvent
+from domain.models import InferenceEvent
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +32,13 @@ def _from_payload(payload: Dict[str, Any]) -> InferenceEvent:
         object_key=payload["object_key"],
         content_type=payload.get("content_type", "application/octet-stream"),
         size_bytes=int(payload.get("size_bytes", 0)),
-        event=payload.get("event", INFERENCE_EVENT),
+        event=payload["event"],
         created_at=datetime.fromisoformat(payload["created_at"]),
     )
 
 
 class KafkaEventPublisher(EventPublisher):
     def __init__(self, config: KafkaConfig) -> None:
-        self._topic = config.topic
         self._producer = KafkaProducer(
             bootstrap_servers=config.bootstrap_servers,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -48,8 +47,8 @@ class KafkaEventPublisher(EventPublisher):
             retries=3,
         )
 
-    def publish(self, event: InferenceEvent) -> None:
-        future = self._producer.send(self._topic, key=event.event, value=_to_payload(event))
+    def publish(self, topic: str, event: InferenceEvent) -> None:
+        future = self._producer.send(topic, key=event.event, value=_to_payload(event))
         future.get(timeout=10)
 
     def close(self) -> None:
@@ -59,6 +58,7 @@ class KafkaEventPublisher(EventPublisher):
 
 class KafkaEventConsumer(EventConsumer):
     def __init__(self, config: KafkaConfig) -> None:
+        self._event_type = config.event_type
         self._consumer = KafkaConsumer(
             config.topic,
             bootstrap_servers=config.bootstrap_servers,
@@ -71,7 +71,7 @@ class KafkaEventConsumer(EventConsumer):
     def events(self) -> Iterator[InferenceEvent]:
         for message in self._consumer:
             payload = message.value
-            if payload.get("event") != INFERENCE_EVENT:
+            if payload.get("event") != self._event_type:
                 logger.warning("Skipping non-inference message at offset %s", message.offset)
                 self.commit()
                 continue

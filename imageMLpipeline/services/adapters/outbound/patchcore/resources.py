@@ -14,12 +14,30 @@ import numpy as np
 import onnxruntime as ort
 from torchvision import transforms
 
+from domain.models import BufferZone
+
 logger = logging.getLogger(__name__)
 
 # Default PatchCore asset locations inside the container image (see the Docker
 # build, which copies ``adapters/`` to ``/app/adapters``).
 DEFAULT_MEMORY_BANK_PATH = "/app/adapters/outbound/patchcore/asset/memory_bank.npy"
 DEFAULT_ONNX_PATH = "/app/adapters/outbound/patchcore/asset/resnet_backbone.onnx"
+DEFAULT_BUFFER_ZONE_PATH = "/app/adapters/outbound/patchcore/asset/buffer_zone.txt"
+
+
+def load_buffer_zone(path: str = DEFAULT_BUFFER_ZONE_PATH) -> BufferZone:
+    """Parse the calibrated decision band from a ``lower=``/``upper=`` text file."""
+    bounds: dict[str, float] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            bounds[key.strip()] = float(value.strip())
+    zone = BufferZone(lower=bounds["lower"], upper=bounds["upper"])
+    logger.info("Loaded buffer zone lower=%.4f upper=%.4f", zone.lower, zone.upper)
+    return zone
 
 
 def build_transform(image_size: int = 224):
@@ -39,11 +57,13 @@ class AnomalyResources:
     index: faiss.Index
     session: ort.InferenceSession
     transform: object
+    buffer_zone: BufferZone
 
 
 def load_resources(
     memory_bank_path: str = DEFAULT_MEMORY_BANK_PATH,
     onnx_path: str = DEFAULT_ONNX_PATH,
+    buffer_zone_path: str = DEFAULT_BUFFER_ZONE_PATH,
     image_size: int = 224,
     providers: list[str] | None = None,
 ) -> AnomalyResources:
@@ -62,6 +82,12 @@ def load_resources(
         onnx_path, providers=providers or ["CPUExecutionProvider"]
     )
 
+    # 4. Load the calibrated decision band.
+    buffer_zone = load_buffer_zone(buffer_zone_path)
+
     return AnomalyResources(
-        index=index, session=session, transform=build_transform(image_size)
+        index=index,
+        session=session,
+        transform=build_transform(image_size),
+        buffer_zone=buffer_zone,
     )

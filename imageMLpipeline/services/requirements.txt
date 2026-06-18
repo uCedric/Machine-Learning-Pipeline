@@ -1,7 +1,7 @@
 kafka-python==2.0.2
 minio==7.2.9
 Pillow==10.4.0
-pyiceberg[pyarrow,sql-postgres]==0.7.1
+psycopg2-binary==2.9.9
 
 # Anomaly-detection (ResNet + FAISS) inference stage
 numpy==1.26.4

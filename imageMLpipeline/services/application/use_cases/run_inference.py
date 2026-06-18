@@ -2,7 +2,7 @@
 
 Pure application logic wired entirely against :mod:`application.ports`: object
 storage, the anomaly model, the heatmap renderer and the result repository. It
-holds no reference to MinIO, ONNX, FAISS, matplotlib, Iceberg or Postgres — the
+holds no reference to MinIO, ONNX, FAISS, matplotlib or Postgres — the
 composition root injects concrete adapters.
 """
 from __future__ import annotations
@@ -15,12 +15,9 @@ from application.ports.heatmap import HeatmapRenderer
 from application.ports.model import AnomalyModel
 from application.ports.repository import ResultRepository
 from application.ports.storage import ObjectStorage
-from domain.models import InferenceEvent, InferenceResult
+from domain.models import BufferZone, InferenceEvent, InferenceResult
 
 logger = logging.getLogger(__name__)
-
-# Default decision boundary calibrated for the bundled PatchCore memory bank.
-DEFAULT_THRESHOLD = 16.315967559814453
 
 
 class RunInferenceUseCase:
@@ -31,14 +28,16 @@ class RunInferenceUseCase:
         renderer: HeatmapRenderer,
         repository: ResultRepository,
         *,
-        threshold: float = DEFAULT_THRESHOLD,
+        model_id: str,
+        buffer_zone: BufferZone,
         heatmap_bucket: str = "images",
     ) -> None:
         self._storage = storage
         self._model = model
         self._renderer = renderer
         self._repository = repository
-        self._threshold = threshold
+        self._model_id = model_id
+        self._buffer_zone = buffer_zone
         self._heatmap_bucket = heatmap_bucket
 
     def execute(self, event: InferenceEvent) -> InferenceResult:
@@ -50,7 +49,7 @@ class RunInferenceUseCase:
         # Run the model. Products: the preprocessed image, the per-patch L2
         # distance map and the scalar anomaly score.
         original_img_np, dist_score, anomaly_score = self._model.inference(io.BytesIO(image))
-        is_anomaly: bool = anomaly_score >= self._threshold
+        status = self._buffer_zone.classify(anomaly_score)
 
         # Render the heatmap (technical concern, delegated to the renderer port)
         # and store it via this use case's own object storage.
@@ -59,7 +58,8 @@ class RunInferenceUseCase:
             original_img_np,
             dist_score,
             anomaly_score,
-            self._threshold,
+            self._buffer_zone,
+            status,
             title=event.object_key,
         )
         self._storage.put_object(
@@ -71,8 +71,8 @@ class RunInferenceUseCase:
             bucket=event.bucket,
             object_key=event.object_key,
             anomaly_score=anomaly_score,
-            is_anomaly=is_anomaly,
-            model_name=type(self._model).__name__,
+            status=status,
+            model_id=self._model_id,
             heatmap_key=heatmap_key,
         )
         self._repository.save(result)
@@ -81,7 +81,7 @@ class RunInferenceUseCase:
             result.bucket,
             result.object_key,
             result.anomaly_score,
-            "NOK" if is_anomaly else "OK",
+            result.status.upper(),
             result.heatmap_key,
         )
         return result

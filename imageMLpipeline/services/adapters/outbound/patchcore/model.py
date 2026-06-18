@@ -32,10 +32,11 @@ class SingletonMeta(ABCMeta):
 class PatchCore(AnomalyModel, metaclass=SingletonMeta):
     """ResNet (ONNX) backbone + FAISS memory-bank anomaly detector (singleton)."""
 
-    def __init__(self, backbone, index, transform=None):
+    def __init__(self, backbone, index, transform=None, buffer_zone=None):
         self.backbone = backbone      # onnxruntime.InferenceSession
         self.index = index            # FAISS index over the memory bank
         self.transform = transform    # preprocessing transform (callable)
+        self.buffer_zone = buffer_zone  # domain.models.BufferZone (decision band)
 
     def inference(self, img_path, transform=None):
         transform = transform if transform is not None else self.transform

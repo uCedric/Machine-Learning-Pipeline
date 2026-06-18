@@ -18,6 +18,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 
 from application.ports.heatmap import HeatmapRenderer
+from domain.models import BufferZone, PredictionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ class MatplotlibHeatmapRenderer(HeatmapRenderer):
         original_img_np: np.ndarray,
         dist_score: np.ndarray,
         anomaly_score: float,
-        threshold: float,
+        buffer_zone: BufferZone,
+        status: PredictionStatus,
         *,
         title: str | None = None,
     ) -> bytes:
@@ -60,7 +62,6 @@ class MatplotlibHeatmapRenderer(HeatmapRenderer):
         # Render the two-panel comparison figure (to a buffer, not a screen).
         # Object-oriented Figure + explicit Agg canvas: no pyplot global state,
         # so concurrent renders from multiple threads don't corrupt each other.
-        verdict = "NOK" if anomaly_score >= threshold else "OK"
         fig = Figure(figsize=(12, 5))
         FigureCanvasAgg(fig)  # attaches itself as fig.canvas
 
@@ -69,9 +70,13 @@ class MatplotlibHeatmapRenderer(HeatmapRenderer):
         ax1.imshow(original_img_np.squeeze().transpose(1, 2, 0))
         ax1.set_title(title or "Test Image")
 
+        # Anchor the colour scale across the buffer zone so heatmaps stay
+        # comparable image-to-image (rather than self-normalising per image).
         ax2 = fig.add_subplot(1, 2, 2)
-        ax2.imshow(segm_map, cmap="jet", vmin=threshold * 0.8, vmax=threshold * 1.2)
-        ax2.set_title(f"Score: {anomaly_score / threshold:.2f} | {verdict}")
+        ax2.imshow(
+            segm_map, cmap="jet", vmin=buffer_zone.lower * 0.8, vmax=buffer_zone.upper * 1.2
+        )
+        ax2.set_title(f"Score: {anomaly_score:.2f} | {status.upper()}")
 
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight")

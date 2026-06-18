@@ -12,8 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from adapters.outbound.composite_repository import CompositeResultRepository
-from adapters.outbound.iceberg_repository import IcebergResultRepository
 from adapters.outbound.kafka_events import KafkaEventConsumer
 from adapters.outbound.minio_storage import MinioObjectStorage
 from adapters.outbound.patchcore.factory import build_patchcore
@@ -54,16 +52,14 @@ class InferenceConsumer:
         storage = MinioObjectStorage(settings.minio)
         model = build_patchcore(settings.model)
         renderer = MatplotlibHeatmapRenderer()
-        repository = CompositeResultRepository(
-            IcebergResultRepository(settings.iceberg),
-            PostgresResultRepository(settings.iceberg.sql_uri),
-        )
+        repository = PostgresResultRepository(settings.postgres.sql_uri)
         use_case = RunInferenceUseCase(
             storage,
             model,
             renderer,
             repository,
-            threshold=settings.model.threshold,
+            model_id=settings.model.model_id,
+            buffer_zone=model.buffer_zone,
             heatmap_bucket=settings.minio.images_bucket,
         )
         consumer = KafkaEventConsumer(settings.kafka)

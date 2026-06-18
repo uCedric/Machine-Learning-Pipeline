@@ -1,8 +1,7 @@
 """Postgres adapter: store inference results in a relational table.
 
-Complements the Iceberg sink — the same :class:`~domain.models.InferenceResult`
-rows are written to a plain ``inference_results`` table so they are directly
-SQL-queryable (Iceberg keeps the data as Parquet in the MinIO warehouse).
+:class:`~domain.models.InferenceResult` rows are written to a plain
+``inference_results`` table so they are directly SQL-queryable.
 """
 from __future__ import annotations
 
@@ -52,28 +51,29 @@ class PostgresResultRepository(ResultRepository):
             self._pool.putconn(conn)
 
     def save(self, result: InferenceResult) -> None:
-        # The object key is a uuid-based file name; the event id is that uuid
-        # (the key without its extension), recording one execution per image.
-        event_id = PurePosixPath(result.object_key).stem
+        # ``event_id`` is the result's own id. ``image_id`` (FK → image) is the
+        # uuid stem of the object key, matching the row the ELT recorded.
+        image_id = PurePosixPath(result.object_key).stem
         with self._connection() as conn, conn.cursor() as cur:
 
             _INSERT_SQL = """
             INSERT INTO inference_results
-                (event_id, object_key, bucket, anomaly_score, is_anomaly,
-                model_name, heatmap_key, inferred_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (event_id, image_id, model_id, object_key, bucket,
+                anomaly_score, status, heatmap_key, inferred_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (event_id) DO NOTHING
             """
 
             cur.execute(
                 _INSERT_SQL,
                 (
-                    event_id,
+                    result.event_id,
+                    image_id,
+                    result.model_id,
                     result.object_key,
                     result.bucket,
                     result.anomaly_score,
-                    result.is_anomaly,
-                    result.model_name,
+                    result.status.value,
                     result.heatmap_key,
                     result.inferred_at,
                 ),
