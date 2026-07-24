@@ -6,18 +6,16 @@ Split by concern:
   (implements the :class:`~application.ports.model.AnomalyModel` port).
 * :mod:`adapters.outbound.patchcore.resources` — load the memory bank, FAISS
   index, ONNX backbone and the preprocessing transform.
-* :mod:`adapters.outbound.patchcore.factory`   — build a ready-to-run model.
 * :mod:`adapters.outbound.patchcore.heatmap`   — render + store the heatmap
   (implements the :class:`~application.ports.heatmap.HeatmapRenderer` port).
+
+The model factory that builds the detector lives one level up, at
+:mod:`adapters.outbound.factory`, so it can manage other model types too.
 """
-from adapters.outbound.patchcore.factory import ModelFactory, build_patchcore, get_model
 from adapters.outbound.patchcore.heatmap import MatplotlibHeatmapRenderer
 from adapters.outbound.patchcore.model import PatchCore
 
 __all__ = [
-    "ModelFactory",
-    "build_patchcore",
-    "get_model",
     "MatplotlibHeatmapRenderer",
     "PatchCore",
 ]

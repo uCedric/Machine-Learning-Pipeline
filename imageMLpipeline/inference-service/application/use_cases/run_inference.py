@@ -11,11 +11,13 @@ import io
 import logging
 from pathlib import PurePosixPath
 
+from application.ports.cluster_repository import ClusterResultRepository
+from application.ports.clustering import ClusterModel
 from application.ports.heatmap import HeatmapRenderer
 from application.ports.model import AnomalyModel
 from application.ports.repository import ResultRepository
 from application.ports.storage import ObjectStorage
-from domain.models import BufferZone, InferenceEvent, InferenceResult
+from domain.models import BufferZone, ClusterResult, InferenceEvent, InferenceResult
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,8 @@ class RunInferenceUseCase:
         model_id: str,
         buffer_zone: BufferZone,
         heatmap_bucket: str = "images",
+        cluster_model: ClusterModel | None = None,
+        cluster_repository: ClusterResultRepository | None = None,
     ) -> None:
         self._storage = storage
         self._model = model
@@ -39,6 +43,8 @@ class RunInferenceUseCase:
         self._model_id = model_id
         self._buffer_zone = buffer_zone
         self._heatmap_bucket = heatmap_bucket
+        self._cluster_model = cluster_model
+        self._cluster_repository = cluster_repository
 
     def execute(self, event: InferenceEvent) -> InferenceResult:
         # Fetch the image bytes from object storage. The model reads the image
@@ -84,4 +90,34 @@ class RunInferenceUseCase:
             result.status.upper(),
             result.heatmap_key,
         )
+
+        # Defect clustering (second model, optional): assign the image to a
+        # pretrained cluster and record it as its own result. A clustering
+        # failure must never fail the primary anomaly result, which is already
+        # saved — log it and move on.
+        if self._cluster_model is not None and self._cluster_repository is not None:
+            try:
+                assignment = self._cluster_model.assign(io.BytesIO(image))
+                cluster_result = ClusterResult(
+                    bucket=event.bucket,
+                    object_key=event.object_key,
+                    cluster_id=assignment.cluster_id,
+                    probability=assignment.probability,
+                    model_id=assignment.model_id,
+                )
+                self._cluster_repository.save(cluster_result)
+                logger.info(
+                    "Saved cluster result for %s/%s: cluster=%d (p=%.2f)",
+                    cluster_result.bucket,
+                    cluster_result.object_key,
+                    cluster_result.cluster_id,
+                    cluster_result.probability,
+                )
+            except Exception:
+                logger.exception(
+                    "Defect clustering failed for %s/%s; inference result already saved",
+                    event.bucket,
+                    event.object_key,
+                )
+
         return result

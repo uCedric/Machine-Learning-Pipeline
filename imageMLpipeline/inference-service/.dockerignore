@@ -1,3 +1,7 @@
 **/__pycache__/
 **/*.pyc
 .pytest_cache/
+
+# Model assets are distributed via the models bucket (uploaded by minio-init)
+# and fetched at runtime — not baked into the image.
+adapters/outbound/patchcore/asset/

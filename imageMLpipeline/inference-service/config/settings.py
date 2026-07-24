@@ -9,14 +9,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-# Default PatchCore asset locations inside the container image. The Docker build
-# copies ``adapters/`` to ``/app/adapters``; ``minio-init`` also uploads the same
-# assets to the ``models`` bucket for runtime distribution.
-_DEFAULT_MEMORY_BANK_PATH = "/app/adapters/outbound/patchcore/asset/memory_bank.npy"
-_DEFAULT_ONNX_PATH = "/app/adapters/outbound/patchcore/asset/resnet_backbone.onnx"
-_DEFAULT_BUFFER_ZONE_PATH = "/app/adapters/outbound/patchcore/asset/buffer_zone.txt"
-# Default model registry id. Must match the seeded row in migrations/V1__init.sql.
-_DEFAULT_MODEL_ID = "2526d2bd-0725-43a2-a29b-4905fb0e5335"
+# Local directory the model assets are downloaded to before loading. The bucket,
+# model_type and version are resolved at runtime from the ``inference_model``
+# table (see the model registry), and the assets fetched from object storage
+# rather than baked into the image.
+_DEFAULT_MODEL_CACHE_DIR = "/tmp/model_assets"
 
 
 def _env(key: str, default: str) -> str:
@@ -73,11 +70,9 @@ class EltConfig:
 @dataclass(frozen=True)
 class ModelConfig:
     name: str
-    model_id: str
-    memory_bank_path: str
-    onnx_path: str
+    model_key: str
     image_size: int
-    buffer_zone_path: str
+    cache_dir: str
 
 
 @dataclass(frozen=True)
@@ -87,6 +82,7 @@ class Settings:
     postgres: PostgresConfig
     elt: EltConfig
     model: ModelConfig
+    cluster_model: ModelConfig
 
     @staticmethod
     def from_env() -> "Settings":
@@ -120,11 +116,18 @@ class Settings:
             ),
             model=ModelConfig(
                 name=_env("MODEL_NAME", "patchcore"),
-                model_id=_env("MODEL_ID", _DEFAULT_MODEL_ID),
-                memory_bank_path=_env("MODEL_MEMORY_BANK_PATH", _DEFAULT_MEMORY_BANK_PATH),
-                onnx_path=_env("MODEL_ONNX_PATH", _DEFAULT_ONNX_PATH),
+                model_key=_env("MODEL_KEY", "patchcore"),
                 image_size=int(_env("MODEL_IMAGE_SIZE", "224")),
-                buffer_zone_path=_env("MODEL_BUFFER_ZONE_PATH", _DEFAULT_BUFFER_ZONE_PATH),
+                cache_dir=_env("MODEL_CACHE_DIR", _DEFAULT_MODEL_CACHE_DIR),
+            ),
+            # Second model: defect clustering. Its version/bucket are resolved
+            # from the inference_model table like the anomaly model's; until a
+            # valid row exists for this key, the stage stays disabled.
+            cluster_model=ModelConfig(
+                name=_env("CLUSTER_MODEL_NAME", "dinov2"),
+                model_key=_env("CLUSTER_MODEL_KEY", "dinov2"),
+                image_size=int(_env("CLUSTER_MODEL_IMAGE_SIZE", "224")),
+                cache_dir=_env("MODEL_CACHE_DIR", _DEFAULT_MODEL_CACHE_DIR),
             ),
         )
 

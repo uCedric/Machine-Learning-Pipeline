@@ -14,12 +14,14 @@ from typing import Protocol
 
 from adapters.outbound.kafka_events import KafkaEventConsumer
 from adapters.outbound.minio_storage import MinioObjectStorage
-from adapters.outbound.patchcore.factory import build_patchcore
+from adapters.outbound.factory import ModelFactory
 from adapters.outbound.patchcore.heatmap import MatplotlibHeatmapRenderer
+from adapters.outbound.postgres_cluster_repository import PostgresClusterResultRepository
+from adapters.outbound.postgres_model_registry import PostgresModelRegistry
 from adapters.outbound.postgres_repository import PostgresResultRepository
 from application.ports.events import EventConsumer
 from application.use_cases.run_inference import RunInferenceUseCase
-from config.settings import Settings
+from config.settings import ModelConfig, Settings
 
 logger = logging.getLogger("inference-service")
 
@@ -49,21 +51,65 @@ class InferenceConsumer:
         case, alongside the Kafka event consumer that drives it. The consumer
         and repository are tracked as closables and released by :meth:`close`.
         """
+
+        # initialize registered model
         storage = MinioObjectStorage(settings.minio)
-        model = build_patchcore(settings.model)
+        # Resolve the newest registered model version, then load it. The registry
+        # is only needed at start-up, so it is closed once the model is built.
+        registry = PostgresModelRegistry(settings.postgres.sql_uri)
+        try:
+            factory = ModelFactory(registry, storage)
+            model_config = ModelConfig(
+                name=settings.model.name,
+                model_key=settings.model.model_key,
+                image_size=settings.model.image_size,
+                cache_dir=settings.model.cache_dir,
+            )
+            model = factory.build(model_config)
+
+            # Second model: DINOv2 defect clustering. Its inference_model row
+            # is the activation gate — until an operator registers a valid
+            # version (assets uploaded to the models bucket), LookupError
+            # disables clustering and inference runs exactly as before. Any
+            # other failure (broken or missing assets) stays loud, like the
+            # anomaly model's.
+            cluster_model = None
+            try:
+                cluster_model = factory.build(settings.cluster_model)
+            except LookupError:
+                logger.info(
+                    "No valid '%s' model registered; defect clustering disabled",
+                    settings.cluster_model.model_key,
+                )
+        finally:
+            registry.close()
+
+        # prepare dependcies for the inference use case and inject them
         renderer = MatplotlibHeatmapRenderer()
         repository = PostgresResultRepository(settings.postgres.sql_uri)
+        # The cluster repository (and its connection pool) only exists when the
+        # clustering stage is active.
+        cluster_repository = (
+            PostgresClusterResultRepository(settings.postgres.sql_uri)
+            if cluster_model is not None
+            else None
+        )
         use_case = RunInferenceUseCase(
             storage,
             model,
             renderer,
             repository,
-            model_id=settings.model.model_id,
+            model_id=model.model_id,
             buffer_zone=model.buffer_zone,
             heatmap_bucket=settings.minio.images_bucket,
+            cluster_model=cluster_model,
+            cluster_repository=cluster_repository,
         )
         consumer = KafkaEventConsumer(settings.kafka)
-        return cls(consumer, use_case, closables=(consumer, repository))
+        closables: tuple[_Closeable, ...] = (consumer, repository)
+        if cluster_repository is not None:
+            closables += (cluster_repository,)
+        return cls(consumer, use_case, closables=closables)
 
     def run(self) -> None:
         for event in self._consumer.events():

@@ -23,7 +23,25 @@ POSTGRES_DB=postgres
 ELT_POLL_INTERVAL=5
 
 # ── Inference model ──────────────────────────────────────────────────────────
+# MODEL_KEY selects which model_type the inference service loads; the version and
+# bucket are resolved at runtime from the inference_model table. MODELS_BUCKET /
+# MODEL_KEY / MODEL_VERSION also drive the minio-init upload path
+# (MODELS_BUCKET/{MODEL_KEY}/{MODEL_VERSION}/), so they must match the seeded row.
 MODEL_NAME=patchcore
+MODEL_KEY=patchcore
+MODEL_VERSION=1.0.0
+# Rolling validation set size: after a retrain the train-service re-scores this
+# many recent known-good (status='normal') images to recalibrate the buffer zone.
+VALIDATION_SET_SIZE=200
+
+# ── Defect-clustering model (second model; optional) ─────────────────────────
+# The dinov2 clusterer activates only when a valid inference_model row exists
+# for model_type 'dinov2' AND its four assets (dinov2_vits14.onnx, pca.joblib,
+# umap.joblib, hdbscan.joblib) are uploaded to MODELS_BUCKET/dinov2/{version}/.
+# Until then the inference service logs "defect clustering disabled" and runs
+# anomaly detection exactly as before. See the README activation runbook.
+CLUSTER_MODEL_NAME=dinov2
+CLUSTER_MODEL_KEY=dinov2
 
 # ── Spark (retained cluster; for image preprocessing) ────────────────────────
 SPARK_WORKER_MEMORY=

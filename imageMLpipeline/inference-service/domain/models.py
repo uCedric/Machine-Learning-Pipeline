@@ -61,6 +61,21 @@ class ImageObject:
 
 
 @dataclass(frozen=True)
+class ModelVersion:
+    """A registered model version, as recorded in the ``inference_model`` table.
+
+    Locates the model's assets in object storage: they live in ``bucket`` under
+    ``{model_type}/{version}/``. ``model_type`` doubles as the object-key prefix
+    (e.g. ``patchcore``) and ``version`` is the semver string (e.g. ``1.1.0``).
+    """
+
+    model_id: str
+    model_type: str
+    bucket: str
+    version: str
+
+
+@dataclass(frozen=True)
 class InferenceEvent:
     """Signals that a stored image is ready to be inferred.
 
@@ -94,3 +109,38 @@ class InferenceResult:
     heatmap_key: str
     event_id: str = field(default_factory=lambda: str(uuid4()))
     inferred_at: datetime = field(default_factory=_utcnow)
+
+
+@dataclass(frozen=True)
+class ClusterAssignment:
+    """The defect-cluster verdict a clustering model produced for one image.
+
+    ``cluster_id`` follows HDBSCAN semantics: ``-1`` means noise — the image
+    matched no known cluster. ``probability`` is the membership strength in
+    ``[0, 1]``, and ``model_id`` references the clustering model version that
+    produced the assignment.
+    """
+
+    cluster_id: int
+    probability: float
+    model_id: str
+
+
+@dataclass(frozen=True)
+class ClusterResult:
+    """The outcome of clustering a single image (one row in ``cluster_results``).
+
+    Mirrors :class:`InferenceResult`: identified by its own ``event_id`` (one
+    row per clustering execution), locates the source image by ``object_key``
+    (a uuid-based file name) and ``bucket``, and references the clustering
+    model by ``model_id``. No row for an image means clustering did not run;
+    ``cluster_id`` ``-1`` means it ran and the image matched no cluster.
+    """
+
+    bucket: str
+    object_key: str
+    cluster_id: int
+    probability: float
+    model_id: str
+    event_id: str = field(default_factory=lambda: str(uuid4()))
+    clustered_at: datetime = field(default_factory=_utcnow)

@@ -1,0 +1,394 @@
+<title>DINOv2 地毯瑕疵無監督分群 — 消融實驗報告</title>
+<style>
+  :root{
+    --paper:#f5f6f8; --surface:#ffffff; --surface-2:#fafbfc;
+    --ink:#17202c; --ink-2:#33404f; --muted:#5a6472; --line:#e4e8ee; --track:#eef1f5;
+    --accent:#2c6488; --accent-soft:#e5eef4;
+    --peak:#b26a1e; --peak-soft:#f6ecdd;
+    --good:#2f7a55; --bad:#b4514e; --ref:#8a94a3;
+    --shadow:0 1px 2px rgba(23,32,44,.05), 0 8px 24px rgba(23,32,44,.05);
+    --serif:Georgia,"Songti TC","Source Han Serif TC","Noto Serif CJK TC","Times New Roman",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang TC","Microsoft JhengHei","Noto Sans TC",sans-serif;
+    --mono:"SFMono-Regular","SF Mono","JetBrains Mono","Cascadia Code",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --paper:#0e131a; --surface:#161d27; --surface-2:#131a23;
+      --ink:#e7ecf3; --ink-2:#c3ccd8; --muted:#909cad; --line:#242e3b; --track:#1e2833;
+      --accent:#6fa9d4; --accent-soft:#1b2b39;
+      --peak:#d69a52; --peak-soft:#2c2415;
+      --good:#62b088; --bad:#d98684; --ref:#7a8494;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="light"]{
+    --paper:#f5f6f8; --surface:#ffffff; --surface-2:#fafbfc;
+    --ink:#17202c; --ink-2:#33404f; --muted:#5a6472; --line:#e4e8ee; --track:#eef1f5;
+    --accent:#2c6488; --accent-soft:#e5eef4;
+    --peak:#b26a1e; --peak-soft:#f6ecdd;
+    --good:#2f7a55; --bad:#b4514e; --ref:#8a94a3;
+    --shadow:0 1px 2px rgba(23,32,44,.05), 0 8px 24px rgba(23,32,44,.05);
+  }
+  :root[data-theme="dark"]{
+    --paper:#0e131a; --surface:#161d27; --surface-2:#131a23;
+    --ink:#e7ecf3; --ink-2:#c3ccd8; --muted:#909cad; --line:#242e3b; --track:#1e2833;
+    --accent:#6fa9d4; --accent-soft:#1b2b39;
+    --peak:#d69a52; --peak-soft:#2c2415;
+    --good:#62b088; --bad:#d98684; --ref:#7a8494;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.28);
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+    line-height:1.65;-webkit-font-smoothing:antialiased;font-size:16.5px}
+  .wrap{max-width:880px;margin:0 auto;padding:0 24px}
+  section{padding:52px 0;border-top:1px solid var(--line)}
+  section:first-of-type{border-top:none}
+  h1,h2,h3{text-wrap:balance;line-height:1.25}
+  p{max-width:66ch}
+  a{color:var(--accent)}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--accent);margin:0 0 14px;font-weight:600}
+
+  /* ---------- hero ---------- */
+  .hero{padding:64px 0 44px;border-top:none}
+  .hero h1{font-family:var(--serif);font-weight:600;font-size:clamp(30px,5vw,46px);
+    margin:0 0 16px;letter-spacing:-.01em}
+  .hero .lede{font-size:clamp(17px,2.2vw,20px);color:var(--ink-2);margin:0 0 6px;max-width:60ch}
+  .hero .sub{color:var(--muted);margin:0;max-width:60ch}
+  .statrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:34px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 18px 16px;
+    box-shadow:var(--shadow)}
+  .stat .k{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+  .stat .v{font-family:var(--serif);font-size:34px;font-weight:600;line-height:1;color:var(--ink);
+    font-variant-numeric:tabular-nums}
+  .stat .v.peak{color:var(--peak)}
+  .stat .cap{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+
+  h2{font-size:26px;font-weight:650;margin:0 0 8px;letter-spacing:-.005em}
+  .sectlede{color:var(--muted);margin:0 0 26px;max-width:64ch}
+
+  /* ---------- pipeline flow ---------- */
+  .flow{display:flex;flex-direction:column;gap:10px;margin:6px 0 4px}
+  .step{display:flex;gap:14px;align-items:flex-start;background:var(--surface);border:1px solid var(--line);
+    border-radius:11px;padding:15px 17px;box-shadow:var(--shadow)}
+  .step .idx{flex:0 0 auto;width:26px;height:26px;border-radius:7px;background:var(--accent-soft);color:var(--accent);
+    font-family:var(--mono);font-size:13px;font-weight:700;display:grid;place-items:center;margin-top:2px}
+  .step .body{flex:1;min-width:0}
+  .step .t{font-weight:650;margin:0 0 3px}
+  .step .d{font-size:14px;color:var(--muted);margin:0}
+  .step .d code{font-family:var(--mono);font-size:12.5px;color:var(--ink-2);background:var(--track);
+    padding:1px 5px;border-radius:4px}
+  .arrow{color:var(--muted);text-align:center;font-size:13px;line-height:1;margin:-3px 0}
+
+  /* ---------- ablation chart ---------- */
+  .chart{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px 22px 18px;
+    box-shadow:var(--shadow);margin:4px 0 8px}
+  .chart .ct{font-weight:650;margin:0 0 2px}
+  .chart .cs{font-size:13px;color:var(--muted);margin:0 0 20px}
+  .bars{display:flex;flex-direction:column;gap:13px}
+  .brow{display:grid;grid-template-columns:132px 1fr;gap:14px;align-items:center}
+  .blabel{font-size:13px;color:var(--ink-2);text-align:right;line-height:1.3}
+  .blabel small{display:block;color:var(--muted);font-size:11px;font-family:var(--mono);letter-spacing:.04em}
+  .btrack{position:relative;height:26px;background:var(--track);border-radius:6px;overflow:hidden}
+  .bfill{height:100%;border-radius:6px 4px 4px 6px;background:var(--accent);
+    display:flex;align-items:center;justify-content:flex-end;transition:width .2s}
+  .bfill.is-peak{background:var(--peak)}
+  .bfill.is-ref{background:transparent;border:1.5px dashed var(--ref);border-radius:6px}
+  .bval{font-family:var(--mono);font-size:12.5px;font-weight:600;color:#fff;padding-right:9px;font-variant-numeric:tabular-nums}
+  .bfill.is-ref .bval{color:var(--ref)}
+  .caption{font-size:12.5px;color:var(--muted);margin:16px 2px 0;max-width:64ch}
+
+  /* ---------- tables ---------- */
+  .tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:var(--shadow);margin:6px 0}
+  table{border-collapse:collapse;width:100%;font-size:14.5px}
+  caption{caption-side:top;text-align:left;font-size:12.5px;color:var(--muted);padding:12px 16px 2px}
+  th,td{padding:11px 15px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  thead th{font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;
+    background:var(--surface-2)}
+  tbody tr:last-child td{border-bottom:none}
+  td.n,th.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+  .tag{font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:20px;font-weight:600;display:inline-block}
+  .tag.win{background:var(--accent-soft);color:var(--accent)}
+  .tag.peak{background:var(--peak-soft);color:var(--peak)}
+  .tag.bad{color:var(--bad);background:transparent;border:1px solid var(--bad)}
+  .tag.ref{color:var(--ref);background:transparent;border:1px solid var(--line)}
+  .hl{background:var(--peak-soft)}
+  td .diag{color:var(--good);font-weight:700}
+  .mut{color:var(--muted)}
+
+  /* ---------- findings ---------- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:var(--shadow)}
+  .card .cn{font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:700;margin:0 0 9px}
+  .card h3{font-size:16.5px;margin:0 0 7px;font-weight:650}
+  .card p{font-size:14px;color:var(--muted);margin:0;max-width:none}
+  .card p b{color:var(--ink-2);font-weight:600}
+
+  /* ---------- metrics tiles ---------- */
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px;margin:6px 0 4px}
+  .mtile{background:var(--surface);border:1px solid var(--line);border-radius:11px;padding:15px 16px;box-shadow:var(--shadow)}
+  .mtile .mk{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 7px}
+  .mtile .mv{font-family:var(--mono);font-size:23px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+
+  .note{background:var(--surface-2);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:0 10px 10px 0;padding:16px 20px;margin:20px 0}
+  .note p{margin:0;font-size:14.5px;color:var(--ink-2)}
+  .note p+p{margin-top:8px}
+
+  ul.clean{margin:8px 0 0;padding-left:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+  ul.clean li{position:relative;padding-left:22px;color:var(--ink-2);font-size:15px;max-width:64ch}
+  ul.clean li::before{content:"";position:absolute;left:2px;top:10px;width:7px;height:7px;border-radius:2px;background:var(--accent)}
+  ul.clean li.bad::before{background:var(--bad)}
+
+  footer{padding:34px 0 60px;color:var(--muted);font-size:13px;border-top:1px solid var(--line)}
+  footer .num{color:var(--ink-2)}
+  @media (max-width:560px){
+    .brow{grid-template-columns:104px 1fr}
+    section{padding:40px 0}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+
+  /* ---------- 列印 / PDF ---------- */
+  @media print{
+    :root, :root[data-theme="dark"]{
+      --paper:#ffffff; --surface:#ffffff; --surface-2:#f7f8fa;
+      --ink:#17202c; --ink-2:#33404f; --muted:#586173; --line:#d9dde5; --track:#edf0f4;
+      --accent:#26597c; --accent-soft:#e5eef4; --peak:#a5611a; --peak-soft:#f6ecdd;
+      --good:#2c7150; --bad:#a94b48; --ref:#8a94a3; --shadow:none;
+    }
+    @page{ size:A4; margin:14mm 12mm; }
+    html,body{background:#fff}
+    body{font-size:10.5pt}
+    .wrap{max-width:none;padding:0}
+    section{padding:18px 0}
+    .hero{padding:2px 0 16px}
+    .statrow{margin-top:22px}
+    .stat,.step,.card,.mtile,.chart,.note,.tw,.brow,tr{break-inside:avoid}
+    h1,h2,.eyebrow{break-after:avoid}
+    a{color:var(--ink)}
+    *{ -webkit-print-color-adjust:exact; print-color-adjust:exact }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="hero">
+    <p class="eyebrow">Stage-2 · 無監督瑕疵分群 · 消融實驗報告</p>
+    <h1>以 DINOv2 自監督特徵做地毯瑕疵的無監督分群</h1>
+    <p class="lede">把瑕疵分群的骨幹從 ResNet50 換成 DINOv2,並以逐項消融找出讓 DINOv2 特徵發揮的關鍵設計。Hungarian 準確率從 <span class="num">0.494</span> 一路推進到 <span class="num">0.805</span>。</p>
+    <p class="sub">資料集:MVTec <b>carpet</b> 測試影像 · 89 張 · 5 個瑕疵類別(color / cut / hole / metal&nbsp;contamination / thread)</p>
+
+    <div class="statrow">
+      <div class="stat">
+        <p class="k">最終 Hungarian</p>
+        <p class="v peak">0.805</p>
+        <p class="cap">一群對一類最佳指派準確率</p>
+      </div>
+      <div class="stat">
+        <p class="k">相對起點</p>
+        <p class="v">+0.31</p>
+        <p class="cap">0.494 → 0.805</p>
+      </div>
+      <div class="stat">
+        <p class="k">ResNet50 參考</p>
+        <p class="v">0.865</p>
+        <p class="cap">既有方案 · 目標線</p>
+      </div>
+      <div class="stat">
+        <p class="k">覆蓋率</p>
+        <p class="v">97.8%</p>
+        <p class="cap">5 群 · 2 張 noise</p>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== 背景 ===== -->
+  <section>
+    <p class="eyebrow">01 — 背景與目標</p>
+    <h2>問題設定</h2>
+    <p class="sectlede">整體流程為兩階段:Stage-1 用 PatchCore 偵測異常,Stage-2 對「完整地毯測試影像」做<b>無監督</b>瑕疵型態分群。本報告聚焦 Stage-2 的骨幹替換實驗。</p>
+    <ul class="clean">
+      <li>既有的 <b>ResNet50 方案</b>達 Hungarian <span class="num">0.865</span>、五類一群。本實驗探討改用 <b>DINOv2</b>(自監督 ViT,patch token 為密集特徵)能否達到同等水準。</li>
+      <li>方法學上採<b>逐項消融</b>:從單純的全域平均池化 baseline 出發,每次只加回或替換「一項」設計,量化其對分群品質的貢獻。</li>
+      <li>主指標為 <b>Hungarian 匹配準確率</b>(對齊 ResNet 方案的評估口徑),輔以 ARI / AMI / NMI 與加權純度。</li>
+    </ul>
+  </section>
+
+  <!-- ===== 方法 ===== -->
+  <section>
+    <p class="eyebrow">02 — 方法總覽</p>
+    <h2>最終管線</h2>
+    <p class="sectlede">從 patch token 到瑕疵群標籤的完整資料流。核心是「餘弦最近鄰異常評分」與「KernelPCA 流形降維」——兩者是讓 DINOv2 特徵勝出的關鍵。</p>
+    <div class="flow">
+      <div class="step"><div class="idx">1</div><div class="body"><p class="t">DINOv2 密集特徵</p><p class="d"><code>dinov2_vitb14_reg</code> 中間層 <code>blocks[3,5]</code> 的 patch tokens,輸入 448×448 →32×32 patch 網格。用中間層而非最後一層,保留低階紋理。</p></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="idx">2</div><div class="body"><p class="t">餘弦最近鄰異常評分</p><p class="d">用 <code>train/good</code> 的正常 patch 特徵(L2 正規化)建記憶庫;每個 patch 的異常分數 = <code>1 − 對記憶庫的最近鄰餘弦相似度</code>。取代原本的歐式 z-score。</p></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="idx">3</div><div class="body"><p class="t">deep + color 描述子</p><p class="d"><b>deep</b>:以異常分數<sup>3</sup> 加權池化後 L2 正規化(留在餘弦空間,無殘差)。<b>color</b>:從緊致單峰異常 mask 取殘差色彩 5 維。</p></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="idx">4</div><div class="body"><p class="t">分塊平衡串接</p><p class="d"><code>block_prep</code>:每塊逐通道 StandardScaler 後 ×(權重/√維度),讓 deep(1.0)與 color(0.3)的 L2 貢獻不因維度失衡。</p></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="idx">5</div><div class="body"><p class="t">流形降維 → 分群</p><p class="d"><code>KernelPCA(kernel='cosine', n=20)</code> → <code>UMAP(2D, cosine)</code> → <code>HDBSCAN(min_cluster_size=3)</code>。</p></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="idx">6</div><div class="body"><p class="t">第二層:切開 cut / hole</p><p class="d">用「每群平均殘差色強度」排除 color / metal(色差明顯),只在低色差的幾何型群內,用 <code>ecc</code>(離心率)做 1D 二分,把長條 cut 與圓形 hole 分開。</p></div></div>
+    </div>
+  </section>
+
+  <!-- ===== 消融歷程 ===== -->
+  <section>
+    <p class="eyebrow">03 — 消融歷程</p>
+    <h2>從 0.494 到 0.805</h2>
+    <p class="sectlede">兩個轉折點決定了整條曲線:①「歐式評分 → 餘弦評分」,②「線性 PCA → KernelPCA」。其餘是把第二層切刀與降維維度調到位。</p>
+
+    <div class="chart">
+      <p class="ct">各里程碑 Hungarian 準確率</p>
+      <p class="cs">單一指標隨消融階段的演進;虛線框為 ResNet50 參考目標</p>
+      <div class="bars">
+        <div class="brow" title="歐式 z-score 評分下的最佳:deep(加權池化+殘差, power=3)+ 殘差色彩,第一層">
+          <div class="blabel">起點<small>z-score</small></div>
+          <div class="btrack"><div class="bfill" style="width:49.4%"><span class="bval">0.494</span></div></div>
+        </div>
+        <div class="brow" title="改用餘弦最近鄰記憶庫評分,第一層 deep+color:+0.20,關鍵突破">
+          <div class="blabel">餘弦評分<small>+0.20</small></div>
+          <div class="btrack"><div class="bfill" style="width:69.7%"><span class="bval">0.697</span></div></div>
+        </div>
+        <div class="brow" title="加入第二層 ecc 切刀(色守門),補回被併在一起的 hole">
+          <div class="blabel">+ ecc 第二層<small>切 cut/hole</small></div>
+          <div class="btrack"><div class="bfill" style="width:75.3%"><span class="bval">0.753</span></div></div>
+        </div>
+        <div class="brow" title="降維由線性 PCA 換成 KernelPCA(cosine 核)">
+          <div class="blabel">+ KernelPCA<small>cosine 核</small></div>
+          <div class="btrack"><div class="bfill" style="width:79.3%"><span class="bval">0.793</span></div></div>
+        </div>
+        <div class="brow" title="KernelPCA 維度由 30 調至 20(甜蜜點)—— 最終定案">
+          <div class="blabel">+ 維度=20<small>定案</small></div>
+          <div class="btrack"><div class="bfill is-peak" style="width:80.5%"><span class="bval">0.805</span></div></div>
+        </div>
+        <div class="brow" title="既有 ResNet50 方案,相同降維與分群,歐式評分 + 較細的 56×56 anomaly map">
+          <div class="blabel">ResNet50<small>參考</small></div>
+          <div class="btrack"><div class="bfill is-ref" style="width:86.5%"><span class="bval">0.865</span></div></div>
+        </div>
+      </div>
+      <p class="caption">縱軸為離散里程碑,非時間軸;長條由 0 起算,標籤為實測 Hungarian 值。</p>
+    </div>
+
+    <div class="tw">
+      <table>
+        <caption>消融里程碑(主要有效步驟)</caption>
+        <thead><tr><th>階段</th><th>加入 / 改變的設計</th><th class="n">Hungarian</th><th>狀態</th></tr></thead>
+        <tbody>
+          <tr><td>起點</td><td>deep(加權池化+殘差, power=3)+ color · 歐式 z-score</td><td class="n">0.494</td><td><span class="tag ref">基準</span></td></tr>
+          <tr class="hl"><td>轉折 ①</td><td>改<b>餘弦最近鄰</b>記憶庫評分(deep+color)</td><td class="n">0.697</td><td><span class="tag win">+0.20</span></td></tr>
+          <tr><td>—</td><td>+ 第二層 <b>ecc</b> 切刀(色強度守門)</td><td class="n">0.753</td><td><span class="tag win">+0.056</span></td></tr>
+          <tr class="hl"><td>轉折 ②</td><td>+ 降維改 <b>KernelPCA(cosine)</b></td><td class="n">0.793</td><td><span class="tag win">+0.040</span></td></tr>
+          <tr><td>定案</td><td>+ KPCA 維度調至 <b>20</b>(甜蜜點)</td><td class="n">0.805</td><td><span class="tag peak">最佳</span></td></tr>
+          <tr><td>參考</td><td>ResNet50 既有方案(相同下游)</td><td class="n">0.865</td><td><span class="tag ref">目標</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p><b>轉折 ① 為何是關鍵:</b>DINOv2 是 LayerNorm 特徵,語意編碼在「方向」而非「逐通道幅度」。歐式 z-score 對 ResNet(BN 通道)合適,但把 DINOv2 的特徵優勢埋掉了;換成餘弦最近鄰後,同樣的資料一口氣 +0.20。</p>
+      <p><b>關於解析度:</b>在歐式評分下 448 與 784 都停在 0.494,一度誤判為「特徵極限」而非評分方法問題——這個錯誤結論後來被餘弦評分推翻。</p>
+    </div>
+
+    <div class="tw">
+      <table>
+        <caption>走過的死路(記錄下來,避免重試)</caption>
+        <thead><tr><th>嘗試</th><th class="n">結果</th><th>為何無效</th></tr></thead>
+        <tbody>
+          <tr><td>shape 描述子進<b>第一層</b></td><td class="n">0.494→0.404</td><td>全域 shape 壓垮結構;粗 mask 的形狀太噪、多數退回預設值</td></tr>
+          <tr><td>解析度 448→<b>784</b></td><td class="n">持平 / 反降</td><td>解析度非瓶頸;細 map 反而更雜、thread/cut 更碎</td></tr>
+          <tr><td>加深層 <b>[3,5,8]</b></td><td class="n">0.708</td><td>thread 卡 color 是 embedding 本質,加語意層無效</td></tr>
+          <tr><td><b>伸長率</b>(熱圖二階矩)切 cut/hole</td><td class="n">= ecc</td><td>粗 mask 使多數 elongation 退回 1.0,無雙峰可切</td></tr>
+          <tr><td>多維形狀 <b>SpectralClustering</b></td><td class="n">= ecc</td><td>額外形狀特徵在粗 mask 上未帶入新資訊</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===== 關鍵發現 ===== -->
+  <section>
+    <p class="eyebrow">04 — 關鍵發現</p>
+    <h2>可遷移的教訓</h2>
+    <p class="sectlede">這些結論不限於本資料集,是「換骨幹做無監督分群」時通用的設計原則。</p>
+    <div class="cards">
+      <div class="card"><p class="cn">FINDING 01</p><h3>評分方法要配特徵幾何</h3><p><b>最大的單一貢獻。</b>異常評分法必須匹配骨幹特徵的幾何:歐式↔ResNet(BN),餘弦↔DINOv2(LayerNorm)。換對評分:0.494→0.697。</p></div>
+      <div class="card"><p class="cn">FINDING 02</p><h3>特徵標準化不可省</h3><p>加權殘差會產生少數「異常幅度」高變異通道;不做逐通道 StandardScaler,PCA 主軸會被幅度軸獨霸、<b>分群塌成 2 群</b>。</p></div>
+      <div class="card"><p class="cn">FINDING 03</p><h3>形狀是第二層的針對刀</h3><p>形狀描述子<b>不該進第一層</b>(全域加入有害)。應作為第二層針對性切刀,並以「殘差色強度」守門,只切幾何型的 cut/hole。</p></div>
+      <div class="card"><p class="cn">FINDING 04</p><h3>KernelPCA + 維度甜蜜點</h3><p>降維改 KernelPCA(cosine)小幅提升;維度有明顯甜蜜點:<b>20 最佳</b>,過多(50)會讓 thread 併入 metal、純群消失。</p></div>
+      <div class="card"><p class="cn">FINDING 05</p><h3>瓶頸在輸入,不在演算法</h3><p>殘餘的 cut/hole 混雜,用 ecc、伸長率、SpectralClustering 三法<b>結果完全相同</b>——限制來自粗 mask 的形狀輸入,而非分群方法。</p></div>
+      <div class="card"><p class="cn">FINDING 06</p><h3>解析度非萬靈丹</h3><p>ViT 各 block 空間解析度相同,唯一旋鈕是輸入尺寸。但把 mask 加細沒有解決型態分離,反而增加雜訊——問題在特徵/定位品質。</p></div>
+    </div>
+  </section>
+
+  <!-- ===== 最終配置與結果 ===== -->
+  <section>
+    <p class="eyebrow">05 — 最終配置與結果</p>
+    <h2>定案配置</h2>
+
+    <div class="metrics">
+      <div class="mtile"><p class="mk">Hungarian</p><p class="mv">0.805</p></div>
+      <div class="mtile"><p class="mk">Purity</p><p class="mv">0.805</p></div>
+      <div class="mtile"><p class="mk">ARI</p><p class="mv">0.617</p></div>
+      <div class="mtile"><p class="mk">AMI</p><p class="mv">0.699</p></div>
+      <div class="mtile"><p class="mk">NMI</p><p class="mv">0.719</p></div>
+      <div class="mtile"><p class="mk">群數</p><p class="mv">5</p></div>
+    </div>
+
+    <div class="tw">
+      <table>
+        <caption>超參數與模組設定</caption>
+        <thead><tr><th>模組</th><th>設定</th></tr></thead>
+        <tbody>
+          <tr><td class="mut">骨幹</td><td><code class="num">dinov2_vitb14_reg</code> · blocks <span class="num">[3, 5]</span> · 輸入 <span class="num">448</span>(32×32 patch)</td></tr>
+          <tr><td class="mut">異常評分</td><td>餘弦最近鄰記憶庫 · <span class="num">K=1</span> · BANK <span class="num">=20000</span> · 來源 <code>train/good</code></td></tr>
+          <tr><td class="mut">deep 特徵</td><td>異常分數<sup>3</sup> 加權池化 → L2 正規化(無殘差)· <span class="num">WEIGHT_POWER=3</span></td></tr>
+          <tr><td class="mut">color 特徵</td><td>殘差 RGB(3)+ 亮度殘差(1)+ 飽和度(1),取自緊致單峰 mask</td></tr>
+          <tr><td class="mut">分塊平衡</td><td><code>block_prep</code> · W&#8209;deep <span class="num">1.0</span> / W&#8209;color <span class="num">0.3</span></td></tr>
+          <tr><td class="mut">降維</td><td><code>KernelPCA(kernel='cosine', n_components=20)</code> → <code>UMAP(15, 2D, cosine)</code></td></tr>
+          <tr><td class="mut">分群</td><td><code>HDBSCAN(min_cluster_size=3)</code></td></tr>
+          <tr><td class="mut">第二層</td><td>色強度守門 + <code>ecc</code> 1D‑KMeans(2) 切 cut/hole</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tw">
+      <table>
+        <caption>Contingency:分出的 cluster(列) × 真實瑕疵類別(欄)</caption>
+        <thead><tr><th>Cluster</th><th class="n">color</th><th class="n">cut</th><th class="n">hole</th><th class="n">metal</th><th class="n">thread</th><th>主要類別</th><th class="n">純度</th></tr></thead>
+        <tbody>
+          <tr><td>cluster&nbsp;0</td><td class="n">0</td><td class="n"><span class="diag">14</span></td><td class="n">6</td><td class="n">0</td><td class="n">0</td><td>cut</td><td class="n">0.70</td></tr>
+          <tr><td>cluster&nbsp;1</td><td class="n"><span class="diag">19</span></td><td class="n">0</td><td class="n">1</td><td class="n">0</td><td class="n">6</td><td>color</td><td class="n">0.73</td></tr>
+          <tr><td>cluster&nbsp;2</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n"><span class="diag">17</span></td><td class="n">0</td><td>metal</td><td class="n">1.00</td></tr>
+          <tr><td>cluster&nbsp;3</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n"><span class="diag">10</span></td><td>thread</td><td class="n">1.00</td></tr>
+          <tr><td>cluster&nbsp;4</td><td class="n">0</td><td class="n">3</td><td class="n"><span class="diag">10</span></td><td class="n">0</td><td class="n">1</td><td>hole</td><td class="n">0.71</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">綠色為各群的主要(對角)命中數。metal 與 thread 為完全純群;5 個真實類別各有一個對應主群,另有 2 張被 HDBSCAN 判為 noise(未計入)。</p>
+  </section>
+
+  <!-- ===== 限制與未來 ===== -->
+  <section>
+    <p class="eyebrow">06 — 限制與未來工作</p>
+    <h2>殘餘失分與後續方向</h2>
+    <p class="sectlede">距離 ResNet 的 0.865 尚差約 0.06,兩處殘餘失分經診斷都指向<b>同一個根源:DINOv2 對邊界個案的定位/特徵不夠細</b>。</p>
+    <ul class="clean">
+      <li class="bad"><b>6 條 thread 卡在 color 群</b> —— 跨層數、跨解析度皆如此,加深層無效,屬 embedding 層級的本質限制。</li>
+      <li class="bad"><b>9 張 cut / hole 互混</b> —— 那些高離心率的 hole 與短小的 cut,在 32×32 mask 下形狀本就模糊;三種切法同結果已證此為輸入限制。</li>
+    </ul>
+    <div class="note">
+      <p><b>唯一可能真正突破的路:</b>只為「算形狀」把缺陷區以更高解析度重抽 mask,或在 RGB 上做古典分割,取得 cut/hole 的銳利輪廓——但屬新工程,報酬不保證。</p>
+      <p><b>尚未嘗試(期望值較低):</b>RBF 核 KernelPCA、KNN&nbsp;K=3、記憶庫 coreset。<b>若以最高分交付為目標,</b>既有 ResNet50 方案的 0.865 仍是現成更優選擇。</p>
+    </div>
+  </section>
+
+  <footer class="wrap">
+    Stage-2 DINOv2 無監督瑕疵分群消融實驗 · MVTec carpet · <span class="num">89</span> 張 / <span class="num">5</span> 類 ·
+    最終 Hungarian <span class="num">0.805</span> · 報告日期 <span class="num">2026-07-21</span>
+  </footer>
+
+</div>

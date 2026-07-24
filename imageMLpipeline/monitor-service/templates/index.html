@@ -68,11 +68,16 @@
       <div class="card"><div class="n" id="c-anomaly">–</div><div class="l">Anomaly</div></div>
     </div>
 
+    <div class="controls" style="margin-bottom:12px;">
+      <button id="retrainBtn" class="pill" type="button">Retrain selected</button>
+      <span id="retrainMsg" class="muted"></span>
+    </div>
+
     <table>
       <thead>
         <tr>
           <th>Heatmap</th><th>Object key</th><th>Score</th>
-          <th>Status</th><th>Inferred at</th>
+          <th>Status</th><th>Inferred at</th><th>Retrain</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -102,12 +107,15 @@
         for (const r of results) {
           const tr = document.createElement("tr");
           const heatmap = objUrl(r.bucket, r.heatmap_key);
+          const cb = r.status === "pending"
+            ? `<input type="checkbox" class="retrain-cb" value="${r.event_id}">` : "";
           tr.innerHTML = `
             <td><a href="${heatmap}" target="_blank"><img class="thumb" src="${heatmap}" loading="lazy" alt="heatmap"></a></td>
             <td>${r.object_key}</td>
             <td>${Number(r.anomaly_score).toFixed(3)}</td>
             <td><span class="badge ${r.status}">${r.status}</span></td>
-            <td>${new Date(r.inferred_at).toLocaleString()}</td>`;
+            <td>${new Date(r.inferred_at).toLocaleString()}</td>
+            <td>${cb}</td>`;
           tbody.appendChild(tr);
         }
         $("empty").hidden = results.length > 0;
@@ -123,6 +131,26 @@
       const ms = Number($("refreshSel").value);
       if (ms > 0) timer = setInterval(refresh, ms);
     }
+
+    $("retrainBtn").addEventListener("click", async () => {
+      const ids = [...document.querySelectorAll(".retrain-cb:checked")].map(c => c.value);
+      if (!ids.length) { $("retrainMsg").textContent = "select at least one pending row"; return; }
+      $("retrainBtn").disabled = true;
+      const idemKey = crypto.randomUUID();   // stable for this submission (retry-safe)
+      try {
+        const res = await fetch("/api/retrain", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idemKey },
+          body: JSON.stringify({ event_ids: ids }),
+        }).then(r => r.json());
+        $("retrainMsg").textContent = `triggered retraining for ${res.published} image(s)`;
+        refresh();
+      } catch (e) {
+        $("retrainMsg").textContent = "error: " + e.message;
+      } finally {
+        $("retrainBtn").disabled = false;
+      }
+    });
 
     $("statusFilter").addEventListener("change", refresh);
     $("refreshSel").addEventListener("change", reschedule);

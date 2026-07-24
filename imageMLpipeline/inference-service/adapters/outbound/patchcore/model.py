@@ -1,7 +1,7 @@
 """PatchCore detector — a concrete :class:`~application.ports.model.AnomalyModel`.
 
 ResNet (ONNX) backbone + FAISS memory-bank nearest-neighbour search. Built by
-:class:`~adapters.outbound.patchcore.factory.ModelFactory`.
+:class:`~adapters.outbound.factory.ModelFactory`.
 """
 from __future__ import annotations
 
@@ -32,11 +32,12 @@ class SingletonMeta(ABCMeta):
 class PatchCore(AnomalyModel, metaclass=SingletonMeta):
     """ResNet (ONNX) backbone + FAISS memory-bank anomaly detector (singleton)."""
 
-    def __init__(self, backbone, index, transform=None, buffer_zone=None):
+    def __init__(self, backbone, index, transform=None, buffer_zone=None, model_id=None):
         self.backbone = backbone      # onnxruntime.InferenceSession
         self.index = index            # FAISS index over the memory bank
         self.transform = transform    # preprocessing transform (callable)
         self.buffer_zone = buffer_zone  # domain.models.BufferZone (decision band)
+        self.model_id = model_id      # inference_model.model_id of the loaded version
 
     def inference(self, img_path, transform=None):
         transform = transform if transform is not None else self.transform
