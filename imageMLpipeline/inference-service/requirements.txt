@@ -1,0 +1,28 @@
+kafka-python==2.0.2
+minio==7.2.9
+Pillow==10.4.0
+psycopg2-binary==2.9.9
+
+# Anomaly-detection (ResNet + FAISS) inference stage
+numpy==1.26.4
+onnxruntime==1.18.1
+faiss-cpu==1.8.0
+matplotlib==3.9.2
+torch==2.3.1
+torchvision==0.18.1
+# NOTE: plain torch/torchvision from PyPI pull the large CUDA build. For a slim
+# CPU-only image, install them from the CPU wheel index instead:
+#   pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cpu
+
+# Defect-clustering (DINOv2 + PCA -> UMAP -> HDBSCAN) inference stage.
+# All pins ship cp311 manylinux or pure-python wheels — python:3.11-slim has no
+# compiler. The pca/umap/hdbscan joblib artifacts are version-coupled pickles:
+# they MUST be fitted and dumped with these exact versions.
+scikit-learn==1.5.2
+scipy==1.13.1
+joblib==1.4.2
+numba==0.60.0
+llvmlite==0.43.0
+pynndescent==0.5.13
+umap-learn==0.5.7
+hdbscan==0.8.40

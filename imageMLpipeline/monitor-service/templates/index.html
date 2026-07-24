@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inference Monitor</title>
+  <style>
+    :root { --bg:#0f1419; --card:#1b232d; --line:#2b3744; --txt:#e6edf3; --muted:#8b98a5; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--txt); }
+    header { padding:18px 24px; border-bottom:1px solid var(--line);
+             display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    h1 { font-size:18px; margin:0; font-weight:600; }
+    .controls { display:flex; gap:12px; align-items:center; }
+    select, .pill { background:var(--card); color:var(--txt); border:1px solid var(--line);
+                    border-radius:8px; padding:6px 10px; font-size:13px; }
+    .muted { color:var(--muted); font-size:12px; }
+    main { padding:24px; }
+    .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:22px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .card .n { font-size:28px; font-weight:700; }
+    .card .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+    table { width:100%; border-collapse:collapse; background:var(--card);
+            border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+    th, td { text-align:left; padding:10px 14px; border-bottom:1px solid var(--line); font-size:13px; }
+    th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.05em; }
+    tr:last-child td { border-bottom:none; }
+    img.thumb { width:120px; height:60px; object-fit:cover; border-radius:6px; border:1px solid var(--line);
+                cursor:pointer; background:#000; }
+    .badge { padding:3px 9px; border-radius:999px; font-size:11px; font-weight:700; text-transform:uppercase; }
+    .badge.normal  { background:#10331f; color:#3fb950; }
+    .badge.pending { background:#3a2f10; color:#d29922; }
+    .badge.anomaly { background:#3a1417; color:#f85149; }
+    .empty { text-align:center; color:var(--muted); padding:40px; }
+    a { color:inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔎 Inference Monitor</h1>
+    <div class="controls">
+      <label class="muted">Status
+        <select id="statusFilter">
+          <option value="">all</option>
+          <option value="normal">normal</option>
+          <option value="pending">pending</option>
+          <option value="anomaly">anomaly</option>
+        </select>
+      </label>
+      <label class="muted">Refresh
+        <select id="refreshSel">
+          <option value="0">off</option>
+          <option value="3000">3s</option>
+          <option value="5000" selected>5s</option>
+          <option value="15000">15s</option>
+        </select>
+      </label>
+      <span id="updated" class="muted"></span>
+    </div>
+  </header>
+
+  <main>
+    <div class="cards">
+      <div class="card"><div class="n" id="c-total">–</div><div class="l">Total</div></div>
+      <div class="card"><div class="n" id="c-normal">–</div><div class="l">Normal</div></div>
+      <div class="card"><div class="n" id="c-pending">–</div><div class="l">Pending</div></div>
+      <div class="card"><div class="n" id="c-anomaly">–</div><div class="l">Anomaly</div></div>
+    </div>
+
+    <div class="controls" style="margin-bottom:12px;">
+      <button id="retrainBtn" class="pill" type="button">Retrain selected</button>
+      <span id="retrainMsg" class="muted"></span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Heatmap</th><th>Object key</th><th>Score</th>
+          <th>Status</th><th>Inferred at</th><th>Retrain</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty" hidden>No inference results yet.</div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const objUrl = (bucket, key) => `/api/object/${bucket}/${encodeURIComponent(key)}`;
+
+    async function refresh() {
+      const status = $("statusFilter").value;
+      try {
+        const [summary, results] = await Promise.all([
+          fetch("/api/summary").then(r => r.json()),
+          fetch("/api/results?limit=100" + (status ? `&status=${status}` : "")).then(r => r.json()),
+        ]);
+
+        $("c-total").textContent = summary.total;
+        $("c-normal").textContent = summary.normal;
+        $("c-pending").textContent = summary.pending;
+        $("c-anomaly").textContent = summary.anomaly;
+
+        const tbody = $("rows");
+        tbody.innerHTML = "";
+        for (const r of results) {
+          const tr = document.createElement("tr");
+          const heatmap = objUrl(r.bucket, r.heatmap_key);
+          const cb = r.status === "pending"
+            ? `<input type="checkbox" class="retrain-cb" value="${r.event_id}">` : "";
+          tr.innerHTML = `
+            <td><a href="${heatmap}" target="_blank"><img class="thumb" src="${heatmap}" loading="lazy" alt="heatmap"></a></td>
+            <td>${r.object_key}</td>
+            <td>${Number(r.anomaly_score).toFixed(3)}</td>
+            <td><span class="badge ${r.status}">${r.status}</span></td>
+            <td>${new Date(r.inferred_at).toLocaleString()}</td>
+            <td>${cb}</td>`;
+          tbody.appendChild(tr);
+        }
+        $("empty").hidden = results.length > 0;
+        $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+      } catch (e) {
+        $("updated").textContent = "error: " + e.message;
+      }
+    }
+
+    let timer = null;
+    function reschedule() {
+      if (timer) clearInterval(timer);
+      const ms = Number($("refreshSel").value);
+      if (ms > 0) timer = setInterval(refresh, ms);
+    }
+
+    $("retrainBtn").addEventListener("click", async () => {
+      const ids = [...document.querySelectorAll(".retrain-cb:checked")].map(c => c.value);
+      if (!ids.length) { $("retrainMsg").textContent = "select at least one pending row"; return; }
+      $("retrainBtn").disabled = true;
+      const idemKey = crypto.randomUUID();   // stable for this submission (retry-safe)
+      try {
+        const res = await fetch("/api/retrain", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idemKey },
+          body: JSON.stringify({ event_ids: ids }),
+        }).then(r => r.json());
+        $("retrainMsg").textContent = `triggered retraining for ${res.published} image(s)`;
+        refresh();
+      } catch (e) {
+        $("retrainMsg").textContent = "error: " + e.message;
+      } finally {
+        $("retrainBtn").disabled = false;
+      }
+    });
+
+    $("statusFilter").addEventListener("change", refresh);
+    $("refreshSel").addEventListener("change", reschedule);
+    refresh();
+    reschedule();
+  </script>
+</body>
+</html>

@@ -72,26 +72,83 @@ Stop with `docker compose down` (add `-v` to wipe Kafka/MinIO/Postgres volumes).
    event_id, bucket, object_key, content_type, size_bytes, created_at}`) to the
    `inference` topic, and moves the file to `./data/processed`.
 3. `inference-service` consumes the event, reads the image back from MinIO, runs
-   the model, and appends a row to the `inference_results` Postgres table. Kafka
+   the model, and appends a row to the `inference_results` Postgres table. When
+   the DINOv2 clustering stage is active (see below) it then also assigns the
+   image to a defect cluster and appends a row to `cluster_results`. Kafka
    offsets are committed only after the row is saved (at-least-once).
+
+## Second model: DINOv2 defect clustering
+
+Alongside PatchCore (anomaly detection), the inference service can run a second
+model on every consumed image: a **DINOv2 ViT-S/14** embedder followed by a
+pretrained **PCA → UMAP → HDBSCAN** pipeline that assigns the image to a defect
+cluster.
+
+```
+image ─► DINOv2 (ONNX) CLS embedding (384-d) ─► L2 normalise
+      ─► PCA 384→50 ─► UMAP 50→2 ─► HDBSCAN approximate_predict
+      ─► cluster_results row (cluster_id, probability)
+```
+
+- Cluster results land in their own Postgres table, `cluster_results` (one row
+  per clustering execution, modelled on `inference_results`; join the two
+  streams on `image_id`).
+- `cluster_id = -1` means the image matched no known cluster (HDBSCAN noise).
+  **No row** for an image means the clustering stage did not run.
+- A clustering failure never fails the primary anomaly result: the error is
+  logged and only the cluster row is skipped.
+
+The stage is **disabled by default**: at start-up the service resolves the
+newest valid `dinov2` version from the `inference_model` table; while none
+exists it logs `defect clustering disabled` and behaves exactly as before.
+
+### Activating the clustering stage
+
+1. Export the backbone (dev machine, needs internet):
+   `python inference-service/scripts/export_dinov2_onnx.py --output dinov2_vits14.onnx`
+2. Fit the clustering artifacts offline — `pca.joblib`, `umap.joblib`,
+   `hdbscan.joblib`. Hard requirements:
+   - fit HDBSCAN with `prediction_data=True` (the service refuses the artifact
+     otherwise);
+   - extract the training features with the same preprocessing the service
+     uses (shorter-side resize 224 → centre crop 224 → ImageNet normalise →
+     L2 norm), ideally with the exported ONNX model itself;
+   - use the exact library versions pinned in
+     `inference-service/requirements.txt` — the joblib pickles are
+     version-coupled. Safest is to fit inside the service image, e.g.
+     `docker compose run --rm -v "$PWD:/work" inference-service python /work/fit_clusters.py`.
+3. Upload the four files to the MinIO `models` bucket under `dinov2/1.0.0/`
+   (console at http://localhost:9001, or `mc cp`).
+4. Register the version — this is the activation gate:
+   ```sql
+   INSERT INTO inference_model
+       (model_id, model_type, bucket, major_version, minor_version, patch_version, is_valid)
+   VALUES (gen_random_uuid(), 'dinov2', 'models', 1, 0, 0, true);
+   ```
+5. `docker compose restart inference-service` — the logs show the dinov2 asset
+   fetch, a one-off UMAP/HDBSCAN warm-up, then `Saved cluster result …` per
+   image.
 
 ## Project layout
 
-The `services/` codebase follows **Hexagonal Architecture** (Ports & Adapters).
+The `inference-service/` codebase follows **Hexagonal Architecture** (Ports & Adapters).
 Dependencies point inward only: `adapters → application → domain`. The domain
 imports nothing; the application depends only on the domain and the port
 interfaces it owns; concrete infrastructure is reached solely in `bootstrap/`.
 
 ```
-services/
+inference-service/
   domain/                       # ── Core: entities, zero external deps ──
-    models.py                     ImageObject, InferenceEvent, InferenceResult
+    models.py                     ImageObject, InferenceEvent, InferenceResult,
+                                  ClusterAssignment, ClusterResult
   application/                  # ── Application: orchestration + the ports it needs ──
     ports/
       storage.py                  ObjectStorage
       events.py                   EventPublisher, EventConsumer
       repository.py               ResultRepository
-      model.py                    AnomalyModel        (the inference-model port)
+      cluster_repository.py       ClusterResultRepository
+      model.py                    AnomalyModel        (the anomaly-model port)
+      clustering.py               ClusterModel        (the defect-clustering port)
       heatmap.py                  HeatmapRenderer
     use_cases/
       ingest_image.py             IngestImage          (ELT use case)
@@ -101,21 +158,29 @@ services/
       elt_poller.py                 poll a path → IngestImage
       inference_consumer.py         consume Kafka → RunInferenceUseCase
     outbound/                      driven adapters (implement ports)
+      factory.py                    ModelFactory (one builder per model type)
       minio_storage.py              ObjectStorage  → MinIO
       kafka_events.py               EventPublisher/EventConsumer → Kafka
       postgres_repository.py        ResultRepository → Postgres
-      patchcore/                    PatchCore model adapter
+      postgres_cluster_repository.py  ClusterResultRepository → Postgres
+      patchcore/                    PatchCore anomaly-model adapter
         model.py                      PatchCore (implements AnomalyModel)
         resources.py                  load memory bank + FAISS + ONNX (stage 1)
-        factory.py                    ModelFactory / build_patchcore
+        builder.py                    build_patchcore (registered in the factory)
         heatmap.py                    MatplotlibHeatmapRenderer (stage 3)
         asset/                        memory_bank.npy, resnet_backbone.onnx(.data)
+      dinov2/                       DINOv2 defect-clustering adapter
+        model.py                      Dinov2ClusterModel (implements ClusterModel)
+        resources.py                  load ONNX + PCA/UMAP/HDBSCAN artifacts
+        builder.py                    build_dinov2 (registered in the factory)
   config/                       # ── Configuration (read once, at the edge) ──
     settings.py                   env-driven Settings (Kafka/MinIO/Postgres/ELT/Model)
     logging.py                    logging setup
   bootstrap/                    # ── Composition roots: the ONLY wiring ──
     elt.py                        python -m bootstrap.elt
     inference.py                  python -m bootstrap.inference
+  scripts/                      # ── Dev-only utilities (never in the image) ──
+    export_dinov2_onnx.py         export DINOv2 ViT-S/14 to ONNX (run offline)
 ```
 
 The use cases never import an SDK — they speak only to ports. Swapping the model

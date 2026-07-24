@@ -1,0 +1,16 @@
+kafka-python==2.0.2
+minio==7.2.9
+Pillow==10.4.0
+psycopg2-binary==2.9.9
+
+# Feature embedding (ResNet ONNX backbone) for the memory-bank retrain
+numpy==1.26.4
+onnxruntime==1.18.1
+# Nearest-neighbour search to recompute the anomaly-score buffer zone after a
+# retrain; pinned to match the inference service.
+faiss-cpu==1.8.0
+torch==2.3.1
+torchvision==0.18.1
+# NOTE: plain torch/torchvision from PyPI pull the large CUDA build. For a slim
+# CPU-only image, install them from the CPU wheel index instead:
+#   pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cpu
