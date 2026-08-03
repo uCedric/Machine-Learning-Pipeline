@@ -18,7 +18,12 @@ or **uncertain enough to need a human**. Everything else (storage, Kafka, ONNX,
 FAISS, Postgres) is plumbing around that decision.
 
 The decision is made by an **anomaly score** (how far the image is from "known
-good") passed through a **buffer zone**.
+good") passed through a **buffer zone**. This is **stage-one** (triggered by the
+`stage-one-inference` event). A **defective/uncertain** verdict then triggers
+**stage-two** (`stage-two-inference`): a whole-set batch clustering that groups the
+defective images into defect *types*. Stage-one asks "is this defective?";
+stage-two asks "what kind of defect?". See the inference-domain reference for the
+stage-two entities (`ClusterAssignment`, `ClusterResult`).
 
 ### Buffer zone — the core rule
 

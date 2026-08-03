@@ -3,6 +3,37 @@ networks:
     name: MLpipeline-net
     driver: bridge
 
+# ── Shared Spark environment ─────────────────────────────────────────────────
+# The stage-one batch job builds its ports from the *executor's* environment
+# (nothing is serialised from the driver), so every master/worker container
+# needs the same MinIO/Postgres/model settings the inference service has.
+x-spark-env: &spark-env
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
+  IMAGES_BUCKET: ${IMAGES_BUCKET}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required (set it in .env)}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
+  POSTGRES_DB: ${POSTGRES_DB}
+  MODEL_NAME: ${MODEL_NAME}
+  MODEL_KEY: ${MODEL_KEY}
+  # How many slices a micro-batch is cut into. Slices are *tasks*, not model
+  # copies — with worker reuse a queued task lands on an already-warm Python
+  # worker, so raising this is cheap.
+  SPARK_MASTER_URL: spark://spark-master:7077
+  SPARK_PARTITIONS: ${SPARK_PARTITIONS:-6}
+  # Read by the *worker* daemons (the master ignores it): how many task slots one
+  # container advertises. This is the real cap on PatchCore copies — a slot is a
+  # concurrent task, a concurrent task is a Python worker, and every Python worker
+  # holds its own ONNX session + FAISS index. Left unset, a worker offers every
+  # core on the host and the cluster would happily build a dozen copies.
+  SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-3}
+  # Executors download their own images: this is how many of those object-storage
+  # reads one Python worker overlaps while assembling a mini-batch.
+  SPARK_FETCH_WORKERS: ${SPARK_FETCH_WORKERS:-8}
+
 # ── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
   kafka-data:
@@ -142,7 +173,7 @@ services:
       - ./migrations:/flyway/sql:ro
     command: migrate
 
-  # ── ELT (image ingest → MinIO → Kafka "inference" event) ──────────────────
+  # ── ELT (image ingest → MinIO → Kafka "inference" event, type=stage-one) ──
   elt:
     build: ./inference-service
     image: pipeline-app
@@ -160,6 +191,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_EVENT_TYPE: ${KAFKA_EVENT_TYPE}
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required (set it in .env)}
@@ -176,8 +208,11 @@ services:
       - ./data:/data
     command: python -m bootstrap.elt
 
-  # ── Inference microservice (Kafka consumer → model → Postgres) ────────────
-  # Replaces the old spark-submit driver. Inference runs in pure Python.
+  # ── Inference (single consumer → both stages, routed by event 'type') ──────
+  # Consumes the "inference" topic. type=stage-one runs PatchCore anomaly; on an
+  # ANOMALY verdict it re-publishes the same event as type=stage-two,
+  # which this same service then consumes and batch-clusters (ResNet50) into
+  # cluster_results. DINOv2 is registered is_valid=false and is not built.
   inference-service:
     build: ./inference-service
     image: pipeline-app
@@ -192,9 +227,12 @@ services:
         condition: service_completed_successfully
       flyway:
         condition: service_completed_successfully
+      spark-master:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: ${KAFKA_TOPIC}
+      KAFKA_EVENT_TYPE: ${KAFKA_EVENT_TYPE}
       KAFKA_GROUP_ID: inference-service
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required (set it in .env)}
@@ -206,15 +244,43 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (set it in .env)}
       POSTGRES_DB: ${POSTGRES_DB}
       MODEL_NAME: ${MODEL_NAME}
-      # The model version/bucket are resolved from the inference_model table;
-      # MODEL_KEY selects which model_type to load.
+      # Stage-one anomaly model (also names the model whose 'normal' verdicts
+      # supply stage-two's known-good baseline).
       MODEL_KEY: ${MODEL_KEY}
-      # Second model (defect clustering). Activates only once a valid 'dinov2'
-      # row exists in inference_model; until then clustering stays disabled.
-      # The :- fallback keeps the in-code default when the vars are absent
-      # from .env (an empty string would override it).
-      CLUSTER_MODEL_NAME: ${CLUSTER_MODEL_NAME:-dinov2}
-      CLUSTER_MODEL_KEY: ${CLUSTER_MODEL_KEY:-dinov2}
+      # Stage-two clustering backbone + batch tuning. CLUSTER_MODEL_KEY selects
+      # the backbone; STAGE_TWO_TRIGGER_STATUSES are the verdicts that trigger it
+      # ('anomaly' only — 'pending' goes to human review, not to clustering).
+      CLUSTER_MODEL_NAME: ${CLUSTER_MODEL_NAME:-resnet50}
+      CLUSTER_MODEL_KEY: ${CLUSTER_MODEL_KEY:-resnet50}
+      CLUSTER_MODEL_IMAGE_SIZE: ${CLUSTER_MODEL_IMAGE_SIZE:-448}
+      STAGE_TWO_TRIGGER_STATUSES: ${STAGE_TWO_TRIGGER_STATUSES}
+      STAGE_TWO_MIN_BATCH: ${STAGE_TWO_MIN_BATCH:-15}
+      # Two accumulation gates. ASSIGN_COUNT new anomalies are labelled against
+      # the current version's frozen fit (cheap, ids stay comparable); REFIT_COUNT
+      # new anomalies since the last fit redraw the clusters and freeze a new
+      # model version. Progress lives in stage_two_run, so restarts resume.
+      STAGE_TWO_ASSIGN_COUNT: ${STAGE_TWO_ASSIGN_COUNT:-500}
+      STAGE_TWO_REFIT_COUNT: ${STAGE_TWO_REFIT_COUNT:-1000}
+      STAGE_TWO_NORMAL_SET_SIZE: ${STAGE_TWO_NORMAL_SET_SIZE:-200}
+      STAGE_TWO_DEFECT_SET_SIZE: ${STAGE_TWO_DEFECT_SET_SIZE:-5000}
+      # Stage-one scoring runs on the Spark cluster. This container hosts the
+      # driver in client mode, so SPARK_DRIVER_HOST must be a name the executors
+      # can resolve — the compose service name — and the two ports below are
+      # pinned so the workers can call back to it.
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_MICRO_BATCH_SIZE: ${SPARK_MICRO_BATCH_SIZE:-32}
+      SPARK_POLL_TIMEOUT_MS: ${SPARK_POLL_TIMEOUT_MS:-2000}
+      SPARK_PARTITIONS: ${SPARK_PARTITIONS:-6}
+      # How many images predict_batch_udf feeds the backbone per call. Read here
+      # because the driver is where the UDF is built; the executors' own knob
+      # (SPARK_FETCH_WORKERS) lives in the shared Spark environment above.
+      SPARK_UDF_BATCH_SIZE: ${SPARK_UDF_BATCH_SIZE:-8}
+      SPARK_DRIVER_HOST: inference-service
+      SPARK_DRIVER_PORT: 40001
+      SPARK_BLOCK_MANAGER_PORT: 40002
+    expose:
+      - "40001"   # Spark driver RPC (executors call back)
+      - "40002"   # Spark block manager
     command: python -m bootstrap.inference
 
   # ── Train microservice (Kafka consumer for 'train' events) ────────────────
@@ -293,10 +359,16 @@ services:
       IMAGES_BUCKET: ${IMAGES_BUCKET}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TRAIN_TOPIC: train
+      # Share of assigned images matching no cluster at which the dashboard stops
+      # calling stage-two healthy. Advisory only — a drifting verdict asks a human
+      # to review the clustering algorithm; nothing re-fits automatically.
+      STAGE_TWO_DRIFT_NOISE_RATIO: ${STAGE_TWO_DRIFT_NOISE_RATIO:-0.30}
     command: uvicorn app:app --host 0.0.0.0 --port 8000
 
   # ── Spark Master ───────────────────────────────────────────────────────────
-  # Retained cluster. Not used by the inference path for now.
+  # Allocation only — no driver runs here. The stage-one driver lives inside
+  # inference-service (client mode), which registers at start-up and holds its
+  # executors for the life of the service.
   spark-master:
     build: .
     image: spark-app
@@ -304,9 +376,15 @@ services:
     restart: unless-stopped
     networks:
       - data-net
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      flyway:
+        condition: service_completed_successfully
     ports:
       - "7077:7077"   # Spark master RPC
       - "8081:8080"   # Spark master Web UI
+    environment: *spark-env
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
@@ -326,6 +404,7 @@ services:
     depends_on:
       spark-master:
         condition: service_healthy
+    environment: *spark-env
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081
 
   # ── Spark Worker 2 ─────────────────────────────────────────────────────────
@@ -340,6 +419,7 @@ services:
     depends_on:
       spark-master:
         condition: service_healthy
+    environment: *spark-env
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081
 
   # ── Spark Worker 3 ─────────────────────────────────────────────────────────
@@ -354,4 +434,5 @@ services:
     depends_on:
       spark-master:
         condition: service_healthy
+    environment: *spark-env
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --webui-port 8081

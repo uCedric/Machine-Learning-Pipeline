@@ -23,6 +23,18 @@ class EventConsumer(ABC):
         ...
 
     @abstractmethod
+    def poll(self, max_records: int, timeout_ms: int) -> list[InferenceEvent]:
+        """Return up to ``max_records`` events, waiting at most ``timeout_ms``.
+
+        The batch-shaped counterpart to :meth:`events`. Stage-one scoring is
+        distributed, and distributing one image at a time is pure loss, so the
+        consumer accumulates a micro-batch before dispatching it. Returns an
+        empty list when the timeout expires with nothing available, which is the
+        idle case and not an error.
+        """
+        ...
+
+    @abstractmethod
     def commit(self) -> None:
         """Acknowledge that events yielded so far have been fully handled."""
         ...

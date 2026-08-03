@@ -27,6 +27,14 @@ images are flagged for a person instead of being force-classified. The bounds
 are produced/recalibrated by the train service (P75/P99 of a rolling validation
 set of known-good images); this service only *applies* them.
 
+**`PENDING` means "a human decides", and nothing automated consumes it.** It is
+excluded from the entire stage-two path: it does not emit a stage-two trigger, is
+not counted by the accumulation gate, and is not part of the defect set that gets
+clustered. Its route is the monitor dashboard, where an operator reviews the image
+and can publish a `train` event to retrain the memory bank. Only `ANOMALY` — a
+*confirmed* defect — feeds defect-type clustering, so unconfirmed images cannot
+blur the defect types stage-two is trying to name.
+
 ## ModelVersion — which model produced a verdict
 
 Identifies a registered model version (a row in the `inference_model` table) and
@@ -48,11 +56,19 @@ image held in object storage.
 
 ## InferenceEvent — "this image is ready to be inferred"
 
-Emitted by the ELT once an image has landed in object storage; consumed by the
-inference service to trigger a prediction.
+The single event value object, reused across both stages via its `event` tag:
+
+- The ELT emits it tagged **`stage-one-inference`** once an image lands in object
+  storage; stage-one (PatchCore) consumes it to trigger a prediction.
+- Stage-one re-emits it tagged **`stage-two-inference`** (same image fields, new
+  tag) for every verdict in the trigger set (**`anomaly` only**); stage-two
+  consumes it as a trigger, and acts on it only once enough confirmed defects
+  have accumulated.
+
+Fields:
 
 - `bucket`, `object_key`, `content_type`, `size_bytes` — where/what the image is.
-- `event` — the event-type tag.
+- `event` — the event-type tag (`stage-one-inference` / `stage-two-inference`).
 - `created_at` — defaults to "now" (UTC).
 
 Business rule: the image is identified solely by its `object_key`, which is a
@@ -74,3 +90,27 @@ One instance per inference execution (one row in `inference_results`).
 Business rule: a result always pairs the raw `anomaly_score` with the `status`
 derived from it, so a recorded verdict is always traceable back to its score and
 the model that produced it.
+
+## Stage-two clustering — ClusterAssignment & ClusterResult
+
+Stage-two groups the *confirmed* defective images (stage-one verdict `anomaly`)
+into defect types. It is **whole-set batch** clustering — a `stage-two-inference`
+event only triggers a run; the service re-reads the full defect set and a
+known-good baseline and clusters them together (no per-image predict).
+
+- **ClusterAssignment** — the raw verdict a clustering model produces for one
+  image: `cluster_id`, `probability` (membership strength in `[0, 1]`), `model_id`.
+  `cluster_id = -1` follows HDBSCAN semantics — noise, i.e. the image matched no
+  cluster.
+- **ClusterResult** — one row in `cluster_results`, mirroring `InferenceResult`:
+  `event_id` (its own identity), `object_key` + `bucket` (the source image),
+  `cluster_id`, `probability`, `model_id`, and `clustered_at`. All images in one
+  batch run share the same `clustered_at`, so the latest clustering for a
+  `model_id` is the rows with the newest `clustered_at`.
+
+Business rules: **no row** for an image means clustering has not run for it; a
+`cluster_id` of `-1` is a real verdict (ran, matched no cluster). Because each run
+re-clusters the whole set, cluster ids are only meaningful **within** a run, not
+across runs. Which backbone produced a row is carried by `model_id` — ResNet50 is
+the deployed backbone; DINOv2 is a candidate whose `inference_model` row stays
+`is_valid = false` until an evaluate-service promotes it.

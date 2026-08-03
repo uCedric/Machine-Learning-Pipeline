@@ -7,7 +7,11 @@ load them — so the factory can stay model-agnostic.
 from __future__ import annotations
 
 from adapters.outbound.patchcore.model import PatchCore
-from adapters.outbound.patchcore.resources import fetch_assets, load_resources
+from adapters.outbound.patchcore.resources import (
+    fetch_assets,
+    load_resources,
+    onnx_providers,
+)
 from application.ports.storage import ObjectStorage
 from config.settings import ModelConfig
 from domain.models import ModelVersion
@@ -27,7 +31,14 @@ def build_patchcore(
         storage, version.bucket, version.model_type, version.version, config.cache_dir
     )
     resources = load_resources(
-        assets.memory_bank, assets.onnx, assets.buffer_zone, config.image_size
+        assets.memory_bank,
+        assets.onnx,
+        assets.buffer_zone,
+        config.image_size,
+        # The FAISS index stays on the CPU either way: the memory bank is a few
+        # thousand vectors, so the nearest-neighbour search is negligible next
+        # to the backbone and moving it to a GPU would only cost device memory.
+        providers=onnx_providers(config.device),
     )
     return PatchCore(
         resources.session,

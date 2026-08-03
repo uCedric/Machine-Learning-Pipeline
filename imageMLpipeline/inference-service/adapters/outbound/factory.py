@@ -15,8 +15,8 @@ from typing import Callable
 
 from adapters.outbound.dinov2.builder import build_dinov2
 from adapters.outbound.patchcore.builder import build_patchcore
-from application.ports.clustering import ClusterModel
-from application.ports.model import AnomalyModel
+from adapters.outbound.resnet50.builder import build_resnet50
+from application.ports.model import AnomalyModel, ClusterModel
 from application.ports.model_registry import ModelRegistry
 from application.ports.storage import ObjectStorage
 from config.settings import ModelConfig
@@ -47,7 +47,10 @@ class ModelFactory:
         self._builders: dict[str, ModelBuilder] = {}
         # Register the built-in model builders. Adding a new model type means
         # writing its builder and registering it here (or via :meth:`register`).
+        # Stage-one anomaly: patchcore. Stage-two clustering: resnet50 (deployed)
+        # and dinov2 (a candidate, registered is_valid=false until promoted).
         self.register("patchcore", build_patchcore)
+        self.register("resnet50", build_resnet50)
         self.register("dinov2", build_dinov2)
 
     def register(self, model_type: str, builder: ModelBuilder) -> None:

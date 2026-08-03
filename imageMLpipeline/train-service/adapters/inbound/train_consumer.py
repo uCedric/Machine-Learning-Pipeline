@@ -13,13 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
+from adapters.outbound.db import Database, PostgresImageRepository, PostgresModelRegistry
 from adapters.outbound.kafka_events import KafkaEventConsumer
 from adapters.outbound.minio_storage import MinioObjectStorage
 from adapters.outbound.patchcore.embedder import PatchCoreEmbedder
 from adapters.outbound.patchcore.memory_bank_store import PatchCoreMemoryBankStore
 from adapters.outbound.patchcore.resources import build_transform, load_onnx_session
-from adapters.outbound.postgres_model_registry import PostgresModelRegistry
-from adapters.outbound.postgres_image_repository import PostgresImageRepository
 from application.ports.events import EventConsumer
 from application.use_cases.run_training import RunTraining
 from config.settings import Settings
@@ -53,7 +52,9 @@ class TrainConsumer:
         reads and registers versions on every event.
         """
         storage = MinioObjectStorage(settings.minio)
-        registry = PostgresModelRegistry(settings.postgres.sql_uri)
+        # One pool for the whole service; both repositories borrow from it.
+        database = Database(settings.postgres.sql_uri)
+        registry = PostgresModelRegistry(database)
 
         # Locate and load the backbone of the newest valid version.
         base = registry.latest(settings.model.model_key)
@@ -62,7 +63,7 @@ class TrainConsumer:
         )
         embedder = PatchCoreEmbedder(session, build_transform(settings.model.image_size))
         memory_bank = PatchCoreMemoryBankStore(storage)
-        repository = PostgresImageRepository(settings.postgres.sql_uri)
+        repository = PostgresImageRepository(database)
 
         use_case = RunTraining(
             registry,
@@ -73,7 +74,9 @@ class TrainConsumer:
             validation_set_size=settings.model.validation_set_size,
         )
         consumer = KafkaEventConsumer(settings.kafka)
-        return cls(consumer, use_case, closables=(consumer, registry, repository))
+        # The repositories hold no resource of their own — the pool belongs to
+        # the database — so closing it once releases both of them.
+        return cls(consumer, use_case, closables=(consumer, database))
 
     def run(self) -> None:
         for event in self._consumer.events():
@@ -84,6 +87,6 @@ class TrainConsumer:
                 logger.exception("Failed to process train event")
 
     def close(self) -> None:
-        """Release the owned port implementations (event consumer, registry)."""
+        """Release the owned port implementations (event consumer, database)."""
         for closable in self._closables:
             closable.close()

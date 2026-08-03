@@ -1,6 +1,6 @@
 """ELT composition root.
 
-Loads a single image file into MinIO and emits an "inference" event to Kafka.
+Loads a single image file into MinIO and emits a "stage-one-inference" event to Kafka.
 
 Run:  python -m bootstrap.elt
 """
@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 
 from adapters.inbound.elt_poller import EltPoller
+from adapters.outbound.db import Database, PostgresImageRepository
 from adapters.outbound.kafka_events import KafkaEventPublisher
 from adapters.outbound.minio_storage import MinioObjectStorage
-from adapters.outbound.postgres_image_repository import PostgresImageRepository
 from application.use_cases.ingest_image import IngestImage
 from config.logging import configure_logging
 from config.settings import Settings
@@ -24,7 +24,9 @@ def main() -> None:
     settings = Settings.from_env()
 
     storage = MinioObjectStorage(settings.minio)
-    image_repository = PostgresImageRepository(settings.postgres.sql_uri)
+    # One pool for the process; the repository borrows from it.
+    database = Database(settings.postgres.sql_uri)
+    image_repository = PostgresImageRepository(database)
     publisher = KafkaEventPublisher(settings.kafka)
     use_case = IngestImage(
         storage,
@@ -45,7 +47,7 @@ def main() -> None:
         poller.run()
     finally:
         publisher.close()
-        image_repository.close()
+        database.close()
 
 
 if __name__ == "__main__":

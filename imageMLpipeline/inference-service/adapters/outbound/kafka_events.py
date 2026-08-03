@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 def _to_payload(event: InferenceEvent) -> Dict[str, Any]:
     return {
         "event": event.event,
+        "type": str(event.type),
         "bucket": event.bucket,
         "object_key": event.object_key,
         "content_type": event.content_type,
@@ -33,6 +34,8 @@ def _from_payload(payload: Dict[str, Any]) -> InferenceEvent:
         content_type=payload.get("content_type", "application/octet-stream"),
         size_bytes=int(payload.get("size_bytes", 0)),
         event=payload["event"],
+        # Default to stage-one so an event without the discriminator still routes.
+        type=payload.get("type", "stage-one"),
         created_at=datetime.fromisoformat(payload["created_at"]),
     )
 
@@ -72,10 +75,38 @@ class KafkaEventConsumer(EventConsumer):
         for message in self._consumer:
             payload = message.value
             if payload.get("event") != self._event_type:
-                logger.warning("Skipping non-inference message at offset %s", message.offset)
+                logger.warning(
+                    "Skipping message with event=%r (expected %r) at offset %s",
+                    payload.get("event"),
+                    self._event_type,
+                    message.offset,
+                )
                 self.commit()
                 continue
             yield _from_payload(payload)
+
+    def poll(self, max_records: int, timeout_ms: int) -> list[InferenceEvent]:
+        """Accumulate up to ``max_records`` events for one dispatch round.
+
+        ``KafkaConsumer.poll`` returns a ``{TopicPartition: [records]}`` map, so
+        the partition batches are flattened back into arrival order. Events of a
+        foreign ``event`` type are skipped here exactly as in :meth:`events`.
+        """
+        batches = self._consumer.poll(timeout_ms=timeout_ms, max_records=max_records)
+        events: list[InferenceEvent] = []
+        for records in batches.values():
+            for message in records:
+                payload = message.value
+                if payload.get("event") != self._event_type:
+                    logger.warning(
+                        "Skipping message with event=%r (expected %r) at offset %s",
+                        payload.get("event"),
+                        self._event_type,
+                        message.offset,
+                    )
+                    continue
+                events.append(_from_payload(payload))
+        return events
 
     def commit(self) -> None:
         self._consumer.commit()

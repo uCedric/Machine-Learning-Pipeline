@@ -33,6 +33,20 @@
     .badge.pending { background:#3a2f10; color:#d29922; }
     .badge.anomaly { background:#3a1417; color:#f85149; }
     .empty { text-align:center; color:var(--muted); padding:40px; }
+    h2 { font-size:14px; font-weight:600; margin:26px 0 10px; }
+    .badge.fit { background:#12263a; color:#58a6ff; }
+    .badge.assign { background:#1c2b1e; color:#7ee787; }
+    .badge.healthy  { background:#10331f; color:#3fb950; }
+    .badge.drifting { background:#3a1417; color:#f85149; }
+    .badge.unknown  { background:#2b3744; color:var(--muted); }
+    .badge.failed   { background:#3a1417; color:#f85149; }
+    .banner { background:var(--card); border:1px solid var(--line); border-left:3px solid var(--line);
+              border-radius:12px; padding:14px 16px; margin-bottom:14px; }
+    .banner.drifting { border-left-color:#f85149; }
+    .banner.healthy  { border-left-color:#3fb950; }
+    .banner .hint { color:var(--muted); font-size:12px; margin-top:6px; }
+    .gauge { display:flex; gap:22px; margin-top:8px; font-size:12px; color:var(--muted); }
+    .gauge b { color:var(--txt); font-size:13px; }
     a { color:inherit; }
   </style>
 </head>
@@ -83,6 +97,30 @@
       <tbody id="rows"></tbody>
     </table>
     <div id="empty" class="empty" hidden>No inference results yet.</div>
+
+    <h2>Stage-two clustering</h2>
+    <div id="s2banner" class="banner">
+      <span class="badge unknown" id="s2verdict">–</span>
+      <span id="s2reason" class="muted"></span>
+      <div class="gauge">
+        <span>towards next assign <b id="s2assign">–</b></span>
+        <span>towards next re-fit <b id="s2refit">–</b></span>
+        <span>fit baseline unmatched <b id="s2base">–</b></span>
+      </div>
+      <div class="hint" id="s2hint"></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Mode</th><th>Version</th><th>Trigger</th><th>Labelled</th>
+          <th>Clusters</th><th>Unmatched</th><th>Mean prob.</th>
+          <th>Took</th><th>Started</th>
+        </tr>
+      </thead>
+      <tbody id="s2rows"></tbody>
+    </table>
+    <div id="s2empty" class="empty" hidden>No stage-two run yet.</div>
   </main>
 
   <script>
@@ -92,10 +130,13 @@
     async function refresh() {
       const status = $("statusFilter").value;
       try {
-        const [summary, results] = await Promise.all([
+        const [summary, results, health, runs] = await Promise.all([
           fetch("/api/summary").then(r => r.json()),
           fetch("/api/results?limit=100" + (status ? `&status=${status}` : "")).then(r => r.json()),
+          fetch("/api/stage-two/health").then(r => r.json()),
+          fetch("/api/stage-two/runs?limit=20").then(r => r.json()),
         ]);
+        renderStageTwo(health, runs);
 
         $("c-total").textContent = summary.total;
         $("c-normal").textContent = summary.normal;
@@ -123,6 +164,47 @@
       } catch (e) {
         $("updated").textContent = "error: " + e.message;
       }
+    }
+
+    const pct = (v) => v === null || v === undefined ? "–" : (v * 100).toFixed(1) + "%";
+
+    function renderStageTwo(health, runs) {
+      $("s2banner").className = "banner " + health.verdict;
+      const v = $("s2verdict");
+      v.className = "badge " + health.verdict;
+      v.textContent = health.verdict;
+      $("s2reason").textContent = health.reason;
+      $("s2assign").textContent = health.pending.since_any_run;
+      $("s2refit").textContent = health.pending.since_last_fit;
+      $("s2base").textContent = health.baseline ? pct(health.baseline.noise_ratio) : "–";
+      // The pipeline cannot repair a moved feature space, so say what a human does.
+      $("s2hint").textContent = health.verdict === "drifting"
+        ? "New defects no longer match the frozen clusters. A re-fit will renumber them but "
+          + "will not help if the descriptors themselves stopped separating the defect types — "
+          + "review the clustering algorithm before trusting the next fit."
+        : health.verdict === "unknown"
+          ? "No fit exists yet; the first stage-two run will build one."
+          : "";
+
+      const tb = $("s2rows");
+      tb.innerHTML = "";
+      for (const r of runs) {
+        const tr = document.createElement("tr");
+        const mode = r.status === "failed" ? "failed" : r.mode;
+        tr.innerHTML = `
+          <td><span class="badge ${mode}">${mode}</span></td>
+          <td>${r.version ?? "–"}</td>
+          <td>${r.defect_count}</td>
+          <td>${r.labelled_count ?? "–"}</td>
+          <td>${r.cluster_count ?? "–"}</td>
+          <td>${pct(r.noise_ratio)}</td>
+          <td>${r.mean_probability === null ? "–" : Number(r.mean_probability).toFixed(3)}</td>
+          <td>${r.duration_s === null ? "–" : Number(r.duration_s).toFixed(1) + "s"}</td>
+          <td>${new Date(r.started_at).toLocaleString()}</td>`;
+        if (r.error) tr.title = r.error;
+        tb.appendChild(tr);
+      }
+      $("s2empty").hidden = runs.length > 0;
     }
 
     let timer = null;

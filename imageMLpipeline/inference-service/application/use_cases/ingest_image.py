@@ -12,7 +12,7 @@ from pathlib import Path
 from application.ports.events import EventPublisher
 from application.ports.image_repository import ImageRepository
 from application.ports.storage import ObjectStorage
-from domain.models import ImageObject, InferenceEvent
+from domain.models import ImageObject, InferenceEvent, StageType
 
 logger = logging.getLogger(__name__)
 
@@ -68,12 +68,14 @@ class IngestImage:
             )
             raise
 
+        # The ELT always produces a stage-one event (anomaly detection first).
         event = InferenceEvent(
             bucket=stored.bucket,
             object_key=stored.key,
             content_type=stored.content_type,
             size_bytes=stored.size_bytes,
             event=self._event_type,
+            type=StageType.STAGE_ONE,
         )
         try:
             self._publisher.publish(self._topic, event)
@@ -105,6 +107,7 @@ class IngestImage:
         """
         payload = {
             "event": event.event,
+            "type": str(event.type),
             "bucket": event.bucket,
             "object_key": event.object_key,
             "content_type": event.content_type,

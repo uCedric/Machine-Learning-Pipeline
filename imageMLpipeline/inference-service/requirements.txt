@@ -14,11 +14,12 @@ torchvision==0.18.1
 # CPU-only image, install them from the CPU wheel index instead:
 #   pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cpu
 
-# Defect-clustering (DINOv2 + PCA -> UMAP -> HDBSCAN) inference stage.
+# Stage-two defect clustering (ResNet50 / DINOv2 -> descriptors -> UMAP -> HDBSCAN).
 # All pins ship cp311 manylinux or pure-python wheels — python:3.11-slim has no
-# compiler. The pca/umap/hdbscan joblib artifacts are version-coupled pickles:
-# they MUST be fitted and dumped with these exact versions.
+# compiler. The whole-set clustering is fit at batch time (no version-coupled
+# joblib artifacts); scikit-image supplies the colour/shape mask descriptors.
 scikit-learn==1.5.2
+scikit-image==0.24.0
 scipy==1.13.1
 joblib==1.4.2
 numba==0.60.0
@@ -26,3 +27,12 @@ llvmlite==0.43.0
 pynndescent==0.5.13
 umap-learn==0.5.7
 hdbscan==0.8.40
+
+# Stage-one scoring is dispatched to the Spark cluster; the service hosts the
+# driver in client mode. Must match the cluster's Spark version exactly — the
+# spark-app image installs the same pin. predict_batch_udf arrived in 3.4.
+pyspark==3.4.0
+# predict_batch_udf is an Arrow-backed pandas UDF, so both ends need pandas and
+# pyarrow — same pins as the spark-app image, which already installs them.
+pandas==2.2.2
+pyarrow==16.1.0

@@ -1,89 +1,35 @@
-"""DINOv2 clustering resource loading.
+"""DINOv2 clustering resource loading (batch, cosine memory bank).
 
-Fetch the assets from the ``models`` bucket, load the ONNX backbone, the
-pretrained PCA / UMAP / HDBSCAN artifacts and the preprocessing transform. Kept
-separate from the clusterer so the model class stays free of file-system / SDK
-setup concerns.
+The stage-two DINOv2 backbone is a fixed pretrained ViT loaded from torch hub
+(no per-version artifacts to fetch — the normal memory bank is built at batch
+time from known-good images). This backbone is a *candidate*: it is registered
+``is_valid=false`` and therefore not built at runtime until an evaluate-service
+promotes it, so its weights are fetched lazily on first activation.
 """
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
-from pathlib import Path
 
-import hdbscan as hdbscan_lib
-import joblib
-import numpy as np
-import onnxruntime as ort
+import torch
 from torchvision import transforms
-
-from application.ports.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
-# DINOv2 asset object names, stored in the models bucket under
-# ``{model_key}/{version}/``. The three .joblib artifacts are version-coupled
-# pickles: they must be fitted and dumped with the exact scikit-learn /
-# umap-learn / hdbscan versions pinned in requirements.txt.
-ASSET_ONNX = "dinov2_vits14.onnx"
-ASSET_PCA = "pca.joblib"
-ASSET_UMAP = "umap.joblib"
-ASSET_HDBSCAN = "hdbscan.joblib"
-ASSET_FILENAMES = (ASSET_ONNX, ASSET_PCA, ASSET_UMAP, ASSET_HDBSCAN)
+# ViT-B/14 with register tokens; intermediate blocks [3, 5] (the finalised choice
+# in the experiment). PATCH 14 -> INPUT_SIZE must be a multiple of 14.
+DINO_MODEL = "dinov2_vitb14_reg"
+DINO_LAYERS = [3, 5]
+PATCH = 14
 
-# ImageNet statistics: the artifacts must be fitted on features extracted with
-# this exact normalisation, or the cluster assignments are meaningless.
 _IMAGENET_MEAN = [0.485, 0.456, 0.406]
 _IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-@dataclass
-class AssetPaths:
-    """Local filesystem locations of the downloaded DINOv2 assets."""
-
-    onnx: str
-    pca: str
-    umap: str
-    hdbscan: str
-
-
-def fetch_assets(
-    storage: ObjectStorage,
-    bucket: str,
-    model_key: str,
-    version: str,
-    cache_dir: str,
-) -> AssetPaths:
-    """Download the DINOv2 assets from ``bucket/{model_key}/{version}/`` to disk.
-
-    Returns the local paths the loaders read from.
-    """
-    prefix = f"{model_key}/{version}"
-    dest = Path(cache_dir) / model_key / version
-    dest.mkdir(parents=True, exist_ok=True)
-    for name in ASSET_FILENAMES:
-        data = storage.get_object(bucket, f"{prefix}/{name}")
-        (dest / name).write_bytes(data)
-        logger.info("Fetched asset %s/%s/%s (%d bytes)", bucket, prefix, name, len(data))
-    return AssetPaths(
-        onnx=str(dest / ASSET_ONNX),
-        pca=str(dest / ASSET_PCA),
-        umap=str(dest / ASSET_UMAP),
-        hdbscan=str(dest / ASSET_HDBSCAN),
-    )
-
-
-def build_transform(image_size: int = 224):
-    """DINOv2 eval preprocessing: shorter-side resize, centre crop, normalise.
-
-    Deliberately different from PatchCore's square resize — it must match the
-    transform the PCA/UMAP/HDBSCAN artifacts were fitted with.
-    """
+def build_transform(input_size: int):
     return transforms.Compose(
         [
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
+            transforms.Resize((input_size, input_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=_IMAGENET_MEAN, std=_IMAGENET_STD),
         ]
@@ -92,51 +38,37 @@ def build_transform(image_size: int = 224):
 
 @dataclass
 class ClusterResources:
-    """Everything the clustering stage needs, loaded once at start-up."""
+    """Everything the DINOv2 clustering stage needs, loaded once at start-up."""
 
-    session: ort.InferenceSession
-    pca: object  # sklearn.decomposition.PCA (384 -> 50)
-    umap: object  # umap.UMAP reducer (50 -> 2)
-    clusterer: object  # hdbscan.HDBSCAN fitted with prediction_data=True
+    model: torch.nn.Module
+    layers: list[int]        # intermediate block indices to pool over
+    layer_names: list[str]   # stable names aligned with ``layers``
     transform: object
+    device: str
+    input_size: int
 
 
-def load_resources(
-    paths: AssetPaths,
-    image_size: int = 224,
-    providers: list[str] | None = None,
-) -> ClusterResources:
-    """Load the ONNX backbone and the pretrained clustering artifacts."""
-    # 1. Load the ONNX backbone.
-    session = ort.InferenceSession(
-        paths.onnx, providers=providers or ["CPUExecutionProvider"]
+def load_resources(image_size: int = 448) -> ClusterResources:
+    """Load the DINOv2 backbone and derive the intermediate-layer configuration."""
+    input_size = (image_size // PATCH) * PATCH
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = torch.hub.load("facebookresearch/dinov2", DINO_MODEL).to(device).eval()
+
+    n_blocks = len(model.blocks)
+    layers = sorted({(i if i >= 0 else n_blocks + i) for i in DINO_LAYERS})
+    layers = [i for i in layers if 0 <= i < n_blocks]
+    if not layers:
+        raise ValueError("DINO_LAYERS out of the model's block range")
+    layer_names = [f"blk{i}" for i in layers]
+    logger.info(
+        "Loaded DINOv2 %s on %s · %d blocks · using intermediate layers %s · input %d",
+        DINO_MODEL, device, n_blocks, layers, input_size,
     )
-
-    # 2. Load the pretrained projection / clustering artifacts.
-    pca = joblib.load(paths.pca)
-    umap_reducer = joblib.load(paths.umap)
-    clusterer = joblib.load(paths.hdbscan)
-
-    # ``approximate_predict`` needs prediction data generated at fit time; fail
-    # loudly at start-up rather than on every event.
-    if getattr(clusterer, "_prediction_data", None) is None:
-        raise ValueError(
-            "HDBSCAN artifact carries no prediction data; refit it with "
-            "prediction_data=True (or call generate_prediction_data() before "
-            "dumping) and re-upload."
-        )
-
-    # 3. Warm up the numba-JIT'd UMAP/HDBSCAN path: the first call compiles for
-    # tens of seconds and must not land on the first Kafka event.
-    start = time.perf_counter()
-    warm = pca.transform(np.zeros((1, pca.n_features_in_), dtype=np.float32))
-    hdbscan_lib.approximate_predict(clusterer, umap_reducer.transform(warm))
-    logger.info("UMAP/HDBSCAN warmup finished in %.1fs", time.perf_counter() - start)
-
     return ClusterResources(
-        session=session,
-        pca=pca,
-        umap=umap_reducer,
-        clusterer=clusterer,
-        transform=build_transform(image_size),
+        model=model,
+        layers=layers,
+        layer_names=layer_names,
+        transform=build_transform(input_size),
+        device=device,
+        input_size=input_size,
     )

@@ -8,6 +8,7 @@ setup concerns.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,13 +54,26 @@ def fetch_assets(
     Returns the local paths the loaders read from. The ONNX sidecar
     ``.onnx.data`` is downloaded next to the model but loaded implicitly by
     onnxruntime, so it is not part of the returned paths.
+
+    The cache is per version, so an already-downloaded asset is reused rather
+    than re-fetched: on a Spark worker several Python processes build the same
+    model, and only the first pays for the 45 MB of weights. Each file is
+    written to a temporary name and renamed into place, so a process that finds
+    an asset present always finds it complete — a plain write would let one
+    worker read a file another is still writing.
     """
     prefix = f"{model_key}/{version}"
     dest = Path(cache_dir) / model_key / version
     dest.mkdir(parents=True, exist_ok=True)
     for name in ASSET_FILENAMES:
+        target = dest / name
+        if target.exists() and target.stat().st_size > 0:
+            logger.info("Reusing cached asset %s", target)
+            continue
         data = storage.get_object(bucket, f"{prefix}/{name}")
-        (dest / name).write_bytes(data)
+        staged = target.with_name(f"{name}.{os.getpid()}.part")
+        staged.write_bytes(data)
+        os.replace(staged, target)
         logger.info("Fetched asset %s/%s/%s (%d bytes)", bucket, prefix, name, len(data))
     return AssetPaths(
         memory_bank=str(dest / ASSET_MEMORY_BANK),
@@ -81,6 +95,30 @@ def load_buffer_zone(path: str) -> BufferZone:
     zone = BufferZone(lower=bounds["lower"], upper=bounds["upper"])
     logger.info("Loaded buffer zone lower=%.4f upper=%.4f", zone.lower, zone.upper)
     return zone
+
+
+def onnx_providers(device: str) -> list:
+    """Translate a ``ModelConfig.device`` string into onnxruntime providers.
+
+    ``cpu`` → CPU only. ``cuda`` / ``cuda:<id>`` → the CUDA provider pinned to
+    that board, with the CPU provider left behind it as a fallback: onnxruntime
+    walks the list in order, so a node CUDA cannot execute still runs rather
+    than failing the session.
+
+    Note the fallback does **not** cover a missing CUDA provider — an image
+    built with the CPU ``onnxruntime`` wheel has no CUDA execution provider at
+    all and will simply run everything on the CPU while looking configured for
+    GPU. Check the log line below when a GPU deployment seems slow.
+    """
+    if not device.startswith("cuda"):
+        return ["CPUExecutionProvider"]
+
+    _, _, board = device.partition(":")
+    device_id = int(board) if board.isdigit() else 0
+    return [
+        ("CUDAExecutionProvider", {"device_id": device_id}),
+        "CPUExecutionProvider",
+    ]
 
 
 def build_transform(image_size: int = 224):
@@ -124,6 +162,9 @@ def load_resources(
     session = ort.InferenceSession(
         onnx_path, providers=providers or ["CPUExecutionProvider"]
     )
+    # What onnxruntime actually bound to, which is not necessarily what was
+    # requested: an unavailable provider is skipped silently.
+    logger.info("ONNX backbone providers: %s", session.get_providers())
 
     # 4. Load the calibrated decision band.
     buffer_zone = load_buffer_zone(buffer_zone_path)

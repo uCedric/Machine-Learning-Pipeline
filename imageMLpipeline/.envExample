@@ -1,4 +1,7 @@
 # ── Kafka ──────────────────────────────────────────────────────────────────
+# One 'inference' event/topic drives both stages; the event's 'type'
+# (stage-one / stage-two) selects which process runs. ELT emits type=stage-one;
+# the inference service re-emits type=stage-two for images that need clustering.
 KAFKA_TOPIC=inference
 KAFKA_EVENT_TYPE=inference
 
@@ -34,15 +37,80 @@ MODEL_VERSION=1.0.0
 # many recent known-good (status='normal') images to recalibrate the buffer zone.
 VALIDATION_SET_SIZE=200
 
-# ── Defect-clustering model (second model; optional) ─────────────────────────
-# The dinov2 clusterer activates only when a valid inference_model row exists
-# for model_type 'dinov2' AND its four assets (dinov2_vits14.onnx, pca.joblib,
-# umap.joblib, hdbscan.joblib) are uploaded to MODELS_BUCKET/dinov2/{version}/.
-# Until then the inference service logs "defect clustering disabled" and runs
-# anomaly detection exactly as before. See the README activation runbook.
-CLUSTER_MODEL_NAME=dinov2
-CLUSTER_MODEL_KEY=dinov2
+# ── Stage-two defect clustering ──────────────────────────────────────────────
+# The inference service re-publishes an 'inference' event tagged type=stage-two
+# for every image it classifies as one of STAGE_TWO_TRIGGER_STATUSES, then consumes
+# it and batch-clusters the current defect set. CLUSTER_MODEL_KEY selects the
+# clustering backbone; only a backbone with a valid inference_model row is built
+# (ResNet50 today; DINOv2 is registered is_valid=false, awaiting the evaluate-service).
+#
+# 'anomaly' only, on purpose. The buffer zone's uncertain verdict ('pending')
+# stays out of the automated clustering path entirely — it is not counted by the
+# gate, not clustered, and does not emit a trigger. Those images are for a human
+# to review in the monitor dashboard, who can then send them for retraining.
+STAGE_TWO_TRIGGER_STATUSES=anomaly
+# Fewest defect images that make a whole-set clustering meaningful; below this the
+# stage-two dispatch logs and skips (UMAP needs ~n_neighbors points).
+STAGE_TWO_MIN_BATCH=15
+# Two accumulation gates, both counted from the stage_two_run watermarks (not an
+# in-memory tally, so a restart resumes):
+#   ASSIGN_COUNT new anomalies since the last run of either mode -> project just
+#     those images through the current version's frozen fit. Cheap, and their
+#     cluster_id means the same defect type as in every earlier batch.
+#   REFIT_COUNT new anomalies since the last *fit* -> re-cluster the whole set and
+#     freeze it as a new inference_model version. Expensive, and it renumbers the
+#     clusters, which is why it is a version boundary.
+# The two counts are separate on purpose: if an assign advanced the fit watermark,
+# the re-fit count would reset every 500 images and the clusters would never be
+# redrawn. A rising share of cluster_id = -1 in assign runs is the signal that a
+# new defect type has appeared and the next re-fit will pick it up.
+STAGE_TWO_ASSIGN_COUNT=500
+STAGE_TWO_REFIT_COUNT=1000
+# How many recent known-good / defect images a batch run pulls from Postgres.
+# Keep DEFECT_SET_SIZE >= REFIT_COUNT, or a fit cannot even see all the images
+# that opened the gate.
+# Dashboard drift alert: the share of assigned images matching no cluster at which
+# monitor-service reports stage-two as 'drifting'. A run is also flagged at twice
+# the fit's own baseline, so a legitimately noisy fit is not flagged on day one.
+# Advisory only — it asks a human to review the clustering algorithm, because a
+# re-fit renumbers clusters but cannot help if the descriptors stopped separating
+# the defect types.
+STAGE_TWO_DRIFT_NOISE_RATIO=0.30
+STAGE_TWO_NORMAL_SET_SIZE=200
+STAGE_TWO_DEFECT_SET_SIZE=5000
+CLUSTER_MODEL_NAME=resnet50
+CLUSTER_MODEL_KEY=resnet50
+# Resolution the ResNet50 clustering experiment was tuned at.
+CLUSTER_MODEL_IMAGE_SIZE=448
 
-# ── Spark (retained cluster; for image preprocessing) ────────────────────────
-SPARK_WORKER_MEMORY=
-SPARK_WORKER_CORES=
+# ── Spark (stage-one inference) ──────────────────────────────────────────────
+# A Kafka 'inference' event is the only way an image reaches stage-one. The
+# consumer accumulates those events into a micro-batch and scores it on the
+# cluster; SPARK_PARTITIONS is how many slices that batch is cut into. A slice is
+# a task, not a model copy — spark.python.worker.reuse keeps the Python workers
+# warm, so a task that has to queue reuses a process whose PatchCore is already
+# loaded.
+SPARK_PARTITIONS=6
+# Task slots one worker container advertises, i.e. the ceiling on concurrent
+# Python workers on that container — and therefore on how many copies of the
+# ResNet50 weights + FAISS index it holds in memory (each is a separate process,
+# nothing is shared between them). Unset, a worker offers every host core.
+# Note this is a scheduling cap, not a CPU limit: those 3 processes can still run
+# onnxruntime/FAISS threads across every core. Use compose `cpus:` for a real one.
+SPARK_WORKER_CORES=3
+# Not currently wired into docker-compose.yml. It would bound the executor *JVM*
+# memory a worker advertises, which does not cover the Python workers where the
+# model actually lives (that is spark.executor.pyspark.memory).
+# SPARK_WORKER_MEMORY=
+
+# Stage-one is batch-only and always runs on the cluster: the consumer
+# accumulates a micro-batch of Kafka events and dispatches the image references
+# to the workers, where a predict_batch_udf downloads them from MinIO, runs the
+# backbone and writes the heatmap and the result back. There is no in-process
+# path, so inference-service needs a reachable spark-master to start.
+SPARK_MICRO_BATCH_SIZE=32
+SPARK_POLL_TIMEOUT_MS=2000
+# Images the backbone sees per model call (driver-side, where the UDF is built),
+# and how many MinIO reads an executor overlaps while assembling that mini-batch.
+SPARK_UDF_BATCH_SIZE=8
+SPARK_FETCH_WORKERS=8
